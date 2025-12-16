@@ -407,27 +407,95 @@ go mod tidy
 
 ### Практика
 
-#### Блок 1 Один проект = один модуль + несколько приложений
-Итак, нашей первой целью будет почувствовать модуль как единицу проекта и отдельные бинарники как приложения.
+Но практику эту я начну с подведения резюме по теории.
+А потом хочу описать ее общую структуру, чтобы стало понятно на какие вопросы мы этой практикой отвечаем.
 
-У нас сейчас есть только пустая директория first-contact и в ней мы создадим такую структуру: 
+Итак резюмируем, 
+1. Мы установили Go
+
+2. Поняли что бинарь go это интерфейс над набором утилит и все это идет из коробки. 
+
+3. Посмотрели на Go с точки зрения типичного проекта.
+   Из этого стало понятно, что: 
+   - У нас есть модуль (по сути - директория с файлом go.mod).
+
+   - В этом модуле может быть одно или более приложений. 
+   Каждое приложение это самостоятельный пакет main из которого получается самостоятельный бинарник.
+
+4. Поняли, что у модуля должно быть имя и есть правила его формирования.
+
+5. Я затронул импорт. 
+    На первый взгляд, этот переход немного резковатый.
+    Как будто бы выбивается из контекста. 
+    Но дело в том, что пытаясь разобраться в логике работы пакетов и модулей,
+    я понял что разбираться тут нужно именно комплексно. 
+    
+    У нас есть модуль, в нем приложение (это пакет main), пакет main может импортировать другие пакеты, те в свою очередь тоже могут импортировать другие пакеты. 
+    
+    Пакеты преназначенные для импорта могут быть частью нашего модуля и лежать в директориях типа (internal или pkg), а могут и тянуться по сети. 
+    
+    Также нужно понимать, что когда мы импортируем внешний пакет, то Go при этом скачает на диск весь его модуль . 
+    А именнно В директорию указанную в GOMODCACHE. Но на этапе компиляции из этого модуля подтянется только указанный пакет.
+
+    Так вот ко всему этому нужно добавить, то что пакеты могут иметь версии.   
+    А это порождает определенные правила по которым работает импорт внешних пакетов и локальных пакетов и определяет как будет устроен наш модуль, если мы ведем разработку например библиотеки у которой будут версии.
+
+    Вот так я и пришел к тому, что нужно именно такое понимание.
+
+А теперь давайте структурируем практику.
+
+Для визуализации вставлю заголовки блоков в терминал: 
+#### Блок 1 Один проект = один модуль + несколько приложений
+#### Блок 2 Импорт на уровне пакетов, скачивание на уровне модулей
+#### Блок 3. Как Go выбирает версию, если мы её явно не указываем
+#### Блок 4. Псевдоверсии: при импорте ветки dev
+#### Блок 5. Установка конкретной версии
+
+Первым блоком мы посмотрим как один проект равен одному модулю и в нем есть несколько приложений.
+Втором блоком будет демонстрация что в коде мы импортируем пакет, а подтянется весь модуль.
+Третим блоком мы посмотрим как Go ведет себя когда мы импортируем пакеты не указывая нужную нам версию. И затронем дополнительное понятие псевдоверсии.
+Четвертым блоком, в качестве дополнения, посмотрим как могут появиться псевдоверсии, если импортировать не по тегу а по ветке.
+В пятом блоке посмотрим как импортировать конкретную версию из перечня имеющихся.
+
+Хорошо, а теперь перейдем к реализации.
+
+#### Блок 1 Один проект = один модуль + несколько приложений
+
+Нашей первой целью будет почувствовать модуль как единицу проекта и отдельные бинарники как приложения.
+Какой-то логики в функционале проекта не будет. 
+Только вызовы функций пустышек, чтобы увидеть что схема работает так как мы ожидаем.
+
+У нас сейчас есть только пустая директория first-contact.
+Это условно директория нашего проекта. 
+И для создания структуры проекта я выполню скрипт на bash.
+
+По сути я просто заскриптовал, то что мог бы делать руками в течении обьяснения. 
+То есть я пошел немного иначе. 
+Я буду показывать скрипт или его фрагмент и рассказывать что он сделает. 
+Потом его запуск и анализ результатов. 
+
+В общем давайте создадим файл `block1.bash`
+И вставим туда код.
+
+Если посмотреть на код, то тут я:
 ```bash
+#инициализирую модуль обычным локальным именем
 go mod init first-contact
+#создаю набор директорий
 mkdir -p cmd/api
 mkdir -p cmd/worker
 mkdir -p internal/service
 ```
 
-Далее создадим файл сервиса:
+Тут сразу сделаю ремарку. То что я сейчас делаю это НЕ канонический паттерн по архитектуре проекта на Go. 
+Хотя такой сушествует. Но думаю, что его стоит разбирать вообще отдельной темой. 
+Я просто беру его фрагменты, подходящие под мою демонстрацию.
+Например директория cmd, в том виде как я это создаю в скрипте, - это принятый в сооществе паттерн но не обязательный.
+А вот директория internal имеет специальный функционал. Пакеты, размещённые в ней, доступны только внутри нашего модуля (точнее — внутри родительского каталога и его подкаталогов), но закрыты для внешнего мира. Имя директории internal является зарезервированным механизмом Go и имеет специальное значение. 
 
 ```bash
-touch internal/service/service.go
-```
-
-Как видим, главный файл пакета называется в соответствии с его именем.
-
-И вставим туда код:
-```go
+#далее создаем файл сервиса и записываем туда код
+cat << 'EOF' > internal/service/service.go
 package service
 
 import "fmt"
@@ -435,23 +503,17 @@ import "fmt"
 func SayHello(name string) {
     fmt.Printf("Hello, %s!\n", name)
 }
+EOF
 ```
 
-Тут мы также видим имя пакета, импорт пакета из стандартной библиотеки Go и функцию.  
-Функции main тут нет.
+Мы тут видим, что главный файл пакета называется также как и директория пакета.
 
-И наверное тут стоит упомянуть, что когда мы размещаем пакеты в директории internal, то этим запрещаем импорт за пределами модуля.
-И про директорию cmd. 
-Это общепринятый патерн но это не обязательно. 
+А в самом коде видим имя пакета, импорт пакета из стандартной библиотеки Go и функцию.  
+А вот функции `main` тут нет.
 
-Но вернемся к теме.
-Следующим шагом создадим файл приложения:
+Следующим шагом cоздаём файл cmd/api/main.go и запишем туда код:
 ```bash
-touch cmd/api/main.go
-```
-
-И вставим туда код:
-```go
+cat << 'EOF' > cmd/api/main.go
 package main
 
 import (
@@ -461,18 +523,15 @@ import (
 func main() {
     service.SayHello("from API")
 }
+EOF
 ```
 
 Тут мы создаём пакет main для приложения api и импортируем пакет service из нашего модуля.  
 В теле функции main просто вызываем функцию из пакета service.
 
-После этого создаём второе приложение:
+После этого создаём второе приложение cmd/worker/main.go и записывапем туда код:
 ```bash
-touch cmd/worker/main.go
-```
-
-И вставляем туда код:
-```go
+cat << 'EOF' > cmd/worker/main.go
 package main
 
 import (
@@ -482,51 +541,115 @@ import (
 func main() {
     service.SayHello("from Worker")
 }
+EOF
 ```
 
-Тут мы создаём пакет main для приложения worker и импортируем пакет service из нашего модуля.  
+В коде мы создаём пакет main для приложения worker и импортируем пакет service из нашего модуля.  
 В теле функции main также вызываем функцию из пакета service.
 
-Следующим шагом мы можем выполнить сборку этих приложений:
+Следующим шагом мы выполняем сборку этих приложений. 
+То есть мы сначала набросали структуру, а потом сразу билдим это в бинарники.
+Для этого выполняется:
 ```bash
 mkdir -p bin
 go build -o bin/api ./cmd/api
 go build -o bin/worker ./cmd/worker
 ```
 
-И если посмотреть в директорию  bin, то увидим, что у нас появились два бинарника.  
-Каждый — это отдельное приложение.
+Давайте запустим этот скрипт.
+После его выполнения можно увидеть, что создана вся описанная структура. 
+Тут есть две директории с точкой входа в код приложения (это api и worker) и один внутренний пакет service.
+И есть файл go.mod.
+Если также посмотреть в директорию  bin, то увидим, что у нас появились два бинарника.  
+Каждый — это отдельное приложение в финальном виде.
 
-./bin/api
-./bin/worker
+И мы можем запустить в терминале эти приложения, например выполнив ./bin/api. 
+В результате увидим строку "Hello, from API!", а значит все корректно отработало. 
+
+То есть цель поставленная перед первым блоком достигнута.
+Идем дальше.
+
+Финальный вид скрипта:
+```bash
+#!/usr/bin/env bash
+
+set -e
+
+# 1. Initialize the module
+go mod init first-contact
+
+# 2. Create directories
+mkdir -p cmd/api
+mkdir -p cmd/worker
+mkdir -p internal/service
+
+# 3. Create the file internal/service/service.go
+cat << 'EOF' > internal/service/service.go
+package service
+
+import "fmt"
+
+func SayHello(name string) {
+    fmt.Printf("Hello, %s!\n", name)
+}
+EOF
+
+# 4. Create the file cmd/api/main.go
+cat << 'EOF' > cmd/api/main.go
+package main
+
+import (
+    "first-contact/internal/service"
+)
+
+func main() {
+    service.SayHello("from API")
+}
+EOF
+
+# 5. Create the file cmd/worker/main.go
+cat << 'EOF' > cmd/worker/main.go
+package main
+
+import (
+    "first-contact/internal/service"
+)
+
+func main() {
+    service.SayHello("from Worker")
+}
+EOF
+
+# 6. Build the applications
+mkdir -p bin
+go build -o bin/api ./cmd/api
+go build -o bin/worker ./cmd/worker
+
+echo "Done! The files are created and compiled."
+```
 
 #### Блок 2 Импорт на уровне пакетов, скачивание на уровне модулей
 
 Целью следующего блока будет показать, что в коде мы импортируем пакет, а скачивается весь модуль.
 
-Для этого в уже созданном модуле (например, в приложении api) нужно добавить простой внешний импорт, например:
+Для этого в уже созданном модуле (например, в приложении api) нужно добавить простой внешний импорт.
+Давайте откоем файл first-contact/cmd/api/main.go и добавим импорт:
 ```go
 "github.com/google/uuid"
 ```
 
-И выполним:
+И выполним после этого:
 ```bash
 go mod tidy
 ```
 
-Давайте посмотрим, что появилось в файле go.mod:
+Это приведет к тому, что в файле go.mod появится зависимость:
 ```go
-module first-contact
-
-go 1.25.1
-
 require github.com/google/uuid v1.6.0
 ```
 
-Тут мы видим имя модуля, версию и имеющуюся теперь у нас зависимость.
-
-Go скачивает модуль по пути, который содержится в переменной GOMODCACHE.  
-Давайте посмотрим её содержание:
+Но как мы уже знаем из теоретического блока, чтобы посмотреть где физически лежат скачанные по зависимости модули, 
+можно выполнить:
 ```bash
 go env GOMODCACHE
 ```
@@ -537,32 +660,58 @@ go env GOMODCACHE
 ```bash
 go list -m -json github.com/google/uuid
 ```
-И возьмем путь из поля Dir:
+И возьмем путь из поля Dir и выполним ls:
 ```bash
 ls -la /home/vysmv/go/pkg/mod/github.com/google/uuid@v1.6.0
 ```
-И увидим все файлы модуля.
+то увидим все файлы модуля.
 
-#### Блок 3. Как Go выбирает версию, если мы её явно их не указываем
+То есть цель блока достигнута, мы увидели что импортируем мы в коде пакет но скачивается весь модуль.
+Значит можем идти дальше.
+
+#### Блок 3. Как Go выбирает версию, если мы её явно не указываем
 
 Тут нашей целью будет продемонстрировать правила выбора версии (v1 → v0 → псевдоверсия).
 
-Для начала рядом с нашим текущим модулем я создам директорию `demo versions and modules` для нового модуля и перейду туда:
+Для начала рядом с нашим текущим модулем я создам директорию dvm то есть `демо версия и модуля` и открою ее в vs code:
 ```bash
 mkdir ~/dvm && code ~/dvm
 ```
-И инициализирую модуль:
+
+Теперь у нас есть наш локально разрабатываемый модуль first-contact и демо версия публичного модуля dvm.
+Его пакет мы и будем импортировать в качестве тестов.
+
+А дальше я тоже пойду путем выполнения скрипта. 
+Но чуть более хитро.
+
+Демонстрация этого блока стотоит из шести шагов и bash будет спрашивать у нас хотим ли продолжить следующий шаг.
+То есть разобрали первый шаг и нажимаем в терминале `y` и выполняем следующий шаг и тд. 
+
+Давайте создадим файл `block3.bash`
+И вставим туда код.
+
+Логика тут будет такая:
+у нас есть функция ask которая проверяет, хочу ли я продолжать.
+
+Далее функция  local_clear но о ней позже.
+
+Есть код каждого шага.
+
+И если проскролить вниз, то там будет вызов каждого шага через вызов функции  ask.
+
+А теперь перейдем к разбору bash скрипта, запуску и последующему анализу результата, после каждого шага.
+
+**Первый шаг: Создадим структуру модуля и запушим ее на Github.**
+
+Первым делом я инициализирую модуль:
 ```bash
 go mod init github.com/vysmv/dvm
 ```
 
-Далее создадим пакет utils:
+Далее создадим пакет utils, а в нем файл utils.go и вставим туда код:
 ```bash
-mkdir utils && touch utils/utils.go
-```
-
-И вставим туда код:
-```go
+mkdir -p ~/dvm/utils
+cat <<EOF > ~/dvm/utils/utils.go
 package utils
 
 import "fmt"
@@ -570,13 +719,17 @@ import "fmt"
 func Hello() {
     fmt.Println("Hello from utils!")
 }
+EOF
 ```
 
-Для демонстрации я создам для него репозиторий:
+В коде мы просто обьявляем пакет utils
+Импортируем fmt и обьявляем функцию Hello.
+
+Так как у нас будут примеры с версиями, то я создал для проекта dvm репозиторий:
 
 https://github.com/vysmv/dvm
 
-И выполню следующие команды:
+По этому выполню следующие команды для инициализации репозитория и запушу текущую структуру:
 ```bash
 git init
 git add .
@@ -586,31 +739,51 @@ git remote add origin git@personal_gh:vysmv/dvm.git
 git push -u origin main
 ```
 
-Введём пароль (два раза).
-
-Тут все команды стандартные, кроме `git remote add origin git@personal_gh:vysmv/dvm.git`.  
-Стандартно там идёт github.com.  
-Я настраивал себе работу с GitHub на два аккаунта и специфически конфигурировал процесс.  
+Тут все команды стандартные, кроме строки `git remote add origin git@personal_gh:vysmv/dvm.git`.  
+Стандартно вместо `personal_gh` идёт `github.com`.  
+Это по тому что я настраивал себе работу с GitHub на два аккаунта и специфически конфигурировал процесс.  
 Если вам хотелось бы посмотреть, как настраивал я, то ссылку на это видео добавлю в закреплённый комментарий.
+И так как это не имеет отношения к основной теме, то идем дальше.
+
+Запускаем скрипт и вводим пароль (два раза).
+
+Давайте посмотрим что получилось. 
+У нас есть модуль dvm с одним пакетом utils и он запушен на гитхаб.
+Давайте это проверим обновив страницу репозитория https://github.com/vysmv/dvm. 
+А если посмотреть файл go.mod, то имя модуля будут указано как URL путь. 
+То есть он может быть доступен из вне.
 
 +++++++++++++++++++++++++++
+**Второй шаг: имортируем пакет когда у внешнего dvm нет версий**
 
-А теперь вернёмся к теме.  
-Далее я добавлю импорт в приложение api:
-```go
-"github.com/vysmv/dvm/utils"
+Тут я добавлю импорт в приложение api модуля first-contact.
+Для этого перезаписываю файл ~/first-contact/cmd/api/main.go на
+```bash 
+ cat <<EOF > ~/first-contact/cmd/api/main.go
+package main
+
+import (
+    "first-contact/internal/service"
+    "github.com/vysmv/dvm/utils" ####new line
+)
+
+func main() {
+    service.SayHello("from API")
+}
+EOF
 ```
 
 И выполню:
 ```bash
 export GOPROXY=direct
 rm -rf ~/go/pkg/mod/cache/download/github.com/vysmv/dvm
+cd ~/first-contact
 go clean -modcache
 export GOPRIVATE=github.com/vysmv/*
 go mod tidy
 ```
 
-Я устанавливаю `export GOPROXY=direct`, чтобы скачивание модулей происходило напрямую с GitHub, а не через прокси.  
+Тут Я устанавливаю `export GOPROXY=direct`, чтобы скачивание модулей происходило напрямую с GitHub, а не через прокси.  
 И удаляю `~/go/pkg/mod/cache/download/github.com/vysmv/dvm`, так как до записи я экспериментировал и хочу удалить артефакты.  
 `go clean -modcache` я выполняю с той же целью.
 
@@ -620,73 +793,103 @@ go mod tidy
 и ничего вам не сломает в будущем.  
 Так что на период тестов — хорошее решение.
 
-После этого мы должны увидеть, что в файле go.mod появится зависимость с псевдоверсией типа:  
+И выполняем второй шаг. 
+
+После этого мы должны увидеть, что в файле go.mod модуля first-contact появится зависимость с псевдоверсией типа:  
 ```go
 require github.com/vysmv/dvm v0.0.0-20251206092652-0f827210d4d2
 ```
 
+То есть мы подтвердили, что если у внешнего модуля нет версий типа v1 или v2, то м получим псевдоверсию.
 +++++++++++++++++++++++++++
 
-А теперь удалим текущие зависимости и перейдём к следующему примеру.  
-Удаляем импорт:
-```go
-github.com/vysmv/dvm/utils
-```
+**Третий шаг: имортируем пакет когда у модуля есть версия из диапазона нулевых**
 
-И выполняем:
+Обновим dvm до версии 0.1.12 и выполним повторный импорт пакета из dvm в модуль first-contact.
+
+Но сначала, перед каждым новым действием, я буду запускать функцию `local_clear`.
+При первом осмотре скрипта я сказал, что упомяну о ней позже.
+Давайте на нее посмотрим.
+Это просто копирование строки с импортом в файле ... потом ее удаление, выполнение go mod tidy и возврашении строки с зависимостью назад.
+Нужно это, чтобы перед каждым новым запуском у нас удалялась прошлая зависимость.
+То есть происходила очистка. Иначе из за того что она уже установлена, некоторые тесты не отработают так как мы ожидаем, так как импорт и зависимость уже имеются. Дальше я не буду обьяснять значение этой функции, а просто вызывать local_clear.  
+
+Далее добавим новую функцию (просто перезапишем весь файл) в файл dvm/utils/utils.go:
 ```bash
-go mod tidy
-```
 
-Следующий пример — это обновление нашего публичного модуля (dvm), у которого есть публичный репозиторий.
+ cat <<EOF > ~/dvm/utils/utils.go
+package utils
 
-Добавим новую функцию в файл dvm/utils/utils.go:
-```go
-func NewFuncV0() {
+import "fmt"
+
+func Hello() {
     fmt.Println("Hello from utils!")
 }
+
+func NewFuncV0() {                      ### [new function]
+    fmt.Println("Hello from utils!")
+}
+EOF
 ```
 
-Выполним команды:
+А после этого выполним команды которые создадут новый тег и запушат изменнения:
 ```bash
+cd ~/dvm
 git add .
 git commit -m "added new func for V0"
 git push
 git tag v0.1.12
 git push --tags
 ```
-И введём пароль (три раза).
 
-Если посмотреть на репозиторий, то можно увидеть, что появился тег.
-
-А теперь снова добавим в наше приложение api из модуля first-contact импорт:
-```go
-"github.com/vysmv/dvm/utils"
-```
-
-И выполним:
+Далее выполним go mod tidy в модуле first-contact
 ```bash
+cd ~/first-contact
 go mod tidy
 ```
 
-Теперь в файле go.mod будет:
+Давайте выполним третий шаг. [пароль три раза]
+
+И посмотрим на файл go.mod у модуля first-contact
+
+Там уже версия 0.1.12:
 ```go
 require github.com/vysmv/dvm v0.1.12
 ```
 
 +++++++++++++++++++++++++++
-Что же... идём дальше.  
+
+**Четвертый шаг: имортируем пакет когда у модуля есть версия из диапазона первых**
+ 
 Добавим нашему модулю dvm версию 1.0.0.
 
-Добавим функцию:
-```go
-func NewFuncV1() {
+Для этого выполним:
+
+```bash
+cat <<EOF > ~/dvm/utils/utils.go
+package utils
+
+import "fmt"
+
+func Hello() {
     fmt.Println("Hello from utils!")
 }
+
+func NewFuncV0() {
+    fmt.Println("Hello from utils!")
+}
+
+func NewFuncV1() { #NEW FUNC
+    fmt.Println("Hello from utils!")
+}
+EOF
 ```
 
-И выполним:
+И сделаем commit и запушим изменения.
+А потом создадим тег и запушим его.
 ```bash
+# 2. git commit + tag v1.0.0
+cd ~/dvm
 git add .
 git commit -m "added new func for V1"
 git push
@@ -694,58 +897,321 @@ git tag v1.0.0
 git push --tags
 ```
 
-И вводим пароль (три раза).
-
-После чего удалим старый импорт и зависимость
-```go
-"github.com/vysmv/dvm/utils"
-```
-
+После чего выполним:
 ```bash
+local_clear
+
+# 3. run go mod tidy
+cd ~/first-contact
 go mod tidy
 ```
 
-А потом возвращаем и снова подтягиваем зависимость:
-```go
-"github.com/vysmv/dvm/utils"
-```
-
-```bash
-go mod tidy
-```
-
-В этот раз мы увидим зависимость уже 
+И если сейчас посмотреть в файл go.mod модуля first-contact, то мы увидим зависимость версии
 ```go
 require github.com/vysmv/dvm v1.0.0
 ```
 
 +++++++++++++++++++++++++++
-
-И последний пример в этом блоке.  
-Удаляем импорт и выполняем:
+**Пятый шаг: создаем вторую версию dvm и импортируем вторую версию**
+  
+Выполняем очищение:
 ```bash
-go mod tidy.
+local_clear
 ```
 
 И далее создаём новую версию, а именно v2 для модуля dvm.  
 Для этого в корне модуля создаём директорию v2.
+В ней инициализируем модуль с новым именем.
+И записываем туда код прошлой версии пакета но меняем API пакета. 
+То есть изменяем имя функции.
 
 ```bash
-mkdir v2 && cd v2
+# 1–5. create v2 module and utils.go
+    mkdir -p ~/dvm/v2/utils
+
+    cd ~/dvm/v2
+    go mod init github.com/vysmv/dvm/v2
+
+    cat <<EOF > ~/dvm/v2/utils/utils.go
+package utils
+
+import "fmt"
+
+func HelloNewAPI() { #NEW API
+    fmt.Println("Hello from utils!")
+}
+
+func NewFuncV0() {
+    fmt.Println("Hello from utils!")
+}
+
+func NewFuncV1() {  
+    fmt.Println("Hello from utils!")
+}
+EOF
 ```
 
-И в ней выполняем:
+А после этого комитим и пушим изменения и ставим тег v2 на корень репозитория:
 ```bash
-go mod init github.com/vysmv/dvm/v2 
+cd ~/dvm
+git add .
+git commit -m "added v2"
+git push
+git tag v2.0.0
+git push --tags
 ```
 
-Потом создаем директорию utils и в ней файл utils.go:
+После этого обновляем файл ~/first-contact/cmd/api/main.go:
 ```bash
-mkdir ~/dvm/v2/utils && touch ~/dvm/v2/utils/utils.go
+cat <<EOF > ~/first-contact/cmd/api/main.go
+package main
+
+import (
+    "first-contact/internal/service"
+    "github.com/vysmv/dvm/v2/utils" #NEW IMPORT
+)
+
+func main() {
+    service.SayHello("from API")
+}
+EOF
+``` 
+
+И выполняем:
+```bash
+cd ~/first-contact
+go mod tidy
 ```
 
-И вставляем туда код предыдущей версии, но меняем API (то есть меняем имя метода в нашем случае с Hello на HelloNewAPI):
+И если мы запустим этот шаг, то увидим что в go.mod first-contact появилась зависимость на вторую версию. 
 ```go
+require github.com/vysmv/dvm/v2 v2.0.0
+```
+То есть мы выполнили задачу этого шага и увидели, как создать вторую версию и импортировали ее в проект first-contact.
+А значит идем дальше. 
+
+**Шестой шаг: выполняем импорт без указания версии из многоверсионного модуля**
+
+Тут мы подтвердим, что если у модуля есть версия больше диапазона первых, и при этом есть нулевые и первые, то скачается последняя из диапазона первых.
+
+Выполним очистку.
+```bash
+local_clear
+```
+
+А потом обновим файл `~/first-contact/cmd/api/main.go` так чтобы импорт был без указания версии и выполним go mod tidy:
+```bash
+# 1. rewrite main.go back to v1 import
+    cat <<EOF > ~/first-contact/cmd/api/main.go
+package main
+
+import (
+    "first-contact/internal/service"
+    "github.com/vysmv/dvm/utils" #NEW IMPOTR
+)
+
+func main() {
+    service.SayHello("from API")
+}
+EOF
+
+# 2. run go mod tidy
+cd ~/first-contact
+go mod tidy
+```
+
+Давайте выполним шестой шаг.
+Как результат в файле ~/first-contact/go.mod  увидим:
+```go
+require github.com/vysmv/dvm v1.0.0
+```
+То есть все отработает с описаной в трех пунктах выше логикой.
+
+На этом мы закончили все шесть шагов третьего блока.  
+И можем переходить к четвёртому.
+
+Полный код скрипта для третьего блока:
+```bash
+#!/usr/bin/env bash
+
+set -e
+
+ask() {
+    read -p "$1 (y/n): " ans
+    if [ "$ans" = "y" ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+local_clear() {
+    local file="$HOME/first-contact/cmd/api/main.go"
+    local workdir="$HOME/first-contact"
+    local saved_line
+
+    # Read and save line 5
+    saved_line="$(sed -n '5p' "$file")"
+
+    # Remove line 5
+    sed -i '5d' "$file"
+
+    # Run go mod tidy in ~/first-contact
+    cd "$workdir"
+    go mod tidy
+
+    # Restore the original line 5
+    sed -i "5i\\$saved_line" "$file"
+}
+
+#######################################
+# STEP 1
+#######################################
+step1() {
+    echo "=== STEP 1 ==="
+    cd ~/dvm
+
+    # 1. go mod init
+    go mod init github.com/vysmv/dvm
+
+    # 2. create utils package
+    mkdir -p ~/dvm/utils
+    cat <<EOF > ~/dvm/utils/utils.go
+package utils
+
+import "fmt"
+
+func Hello() {
+    fmt.Println("Hello from utils!")
+}
+EOF
+
+    # 3. initialize git
+    git init
+    git add .
+    git commit -m "first commit"
+    git branch -M main
+    git remote add origin git@personal_gh:vysmv/dvm.git
+    git push -u origin main
+}
+
+#######################################
+# STEP 2
+#######################################
+step2() {
+    echo "=== STEP 2 ==="
+
+    # 1. rewrite main.go
+    cat <<EOF > ~/first-contact/cmd/api/main.go
+package main
+
+import (
+    "first-contact/internal/service"
+    "github.com/vysmv/dvm/utils"
+)
+
+func main() {
+    service.SayHello("from API")
+}
+EOF
+
+    # 2. Go proxy & tidy operations
+    export GOPROXY=direct
+    rm -rf ~/go/pkg/mod/cache/download/github.com/vysmv/dvm
+    cd ~/first-contact
+    go clean -modcache
+    export GOPRIVATE=github.com/vysmv/*
+    go mod tidy
+}
+
+#######################################
+# STEP 3
+#######################################
+step3() {
+    echo "=== STEP 3 ==="
+    local_clear
+
+    # 1. update utils.go
+    cat <<EOF > ~/dvm/utils/utils.go
+package utils
+
+import "fmt"
+
+func Hello() {
+    fmt.Println("Hello from utils!")
+}
+
+func NewFuncV0() {
+    fmt.Println("Hello from utils!")
+}
+EOF
+
+    # 2. git commit + tag v0.1.12
+    cd ~/dvm
+    git add .
+    git commit -m "added new func for V0"
+    git push
+    git tag v0.1.12
+    git push --tags
+
+    # 3. run go mod tidy inside first-contact
+    cd ~/first-contact
+    go mod tidy
+}
+
+#######################################
+# STEP 4
+#######################################
+step4() {
+    echo "=== STEP 4 ==="
+
+    # 1. update utils.go for V1
+    cat <<EOF > ~/dvm/utils/utils.go
+package utils
+
+import "fmt"
+
+func Hello() {
+    fmt.Println("Hello from utils!")
+}
+
+func NewFuncV0() {
+    fmt.Println("Hello from utils!")
+}
+
+func NewFuncV1() {
+    fmt.Println("Hello from utils!")
+}
+EOF
+
+    # 2. git commit + tag v1.0.0
+    cd ~/dvm
+    git add .
+    git commit -m "added new func for V1"
+    git push
+    git tag v1.0.0
+    git push --tags
+
+    local_clear
+    # 3. run go mod tidy
+    cd ~/first-contact
+    go mod tidy
+}
+
+#######################################
+# STEP 5
+#######################################
+step5() {
+    echo "=== STEP 5 ==="
+    local_clear
+
+    # 1–5. create v2 module and utils.go
+    mkdir -p ~/dvm/v2/utils
+
+    cd ~/dvm/v2
+    go mod init github.com/vysmv/dvm/v2
+
+    cat <<EOF > ~/dvm/v2/utils/utils.go
 package utils
 
 import "fmt"
@@ -761,82 +1227,132 @@ func NewFuncV0() {
 func NewFuncV1() {
     fmt.Println("Hello from utils!")
 }
-```
+EOF
 
-И только после этого ставим тег v2 на корень репозитория:
-```bash
-git add .
-git commit -m "added v2"
-git push
-git tag v2.0.0
-git push --tags
-```
-Вводим пароль (3 раза).
+    # 6. git commit + tag v2.0.0
+    cd ~/dvm
+    git add .
+    git commit -m "added v2"
+    git push
+    git tag v2.0.0
+    git push --tags
 
-И если теперь в нашем модуле fc добавить импорт, но уже с указанием версии ("github.com/vysmv/dvm/v2/utils"), и выполнить:
-```bash
-go mod tidy
-```
+    # 7. update first-contact main.go
+    cat <<EOF > ~/first-contact/cmd/api/main.go
+package main
 
-То в файле go.mod увидим:
-```go
-require github.com/vysmv/dvm/v2 v2.0.0
-```
+import (
+    "first-contact/internal/service"
+    "github.com/vysmv/dvm/v2/utils"
+)
 
-А если с учётом того, что в репозитории уже есть версия 2,  
-снова удалить импорт и выполнить:
-```bash
-go mod tidy
-```
+func main() {
+    service.SayHello("from API")
+}
+EOF
 
-И после этого добавить импорт без указания версии `"github.com/vysmv/dvm/utils"`, то получим:
-```go
-require github.com/vysmv/dvm v1.0.0
-```
-В соответствии с описанной выше логикой.
+    # 8. run go mod tidy
+    cd ~/first-contact
+    go mod tidy
+}
 
-На этом с этим блоком всё.  
-И можем переходить к четвёртому.
+#######################################
+# STEP 6
+#######################################
+step6() {
+    echo "=== STEP 6 ==="
+    local_clear
+
+    # 1. rewrite main.go back to v1 import
+    cat <<EOF > ~/first-contact/cmd/api/main.go
+package main
+
+import (
+    "first-contact/internal/service"
+    "github.com/vysmv/dvm/utils"
+)
+
+func main() {
+    service.SayHello("from API")
+}
+EOF
+
+    # 2. run go mod tidy
+    cd ~/first-contact
+    go mod tidy
+}
+
+#######################################
+# RUN STEPS
+#######################################
+
+if ask "Run step #1?"; then step1; fi
+if ask "Run step #2?"; then step2; fi
+if ask "Run step #3?"; then step3; fi
+if ask "Run step #4?"; then step4; fi
+if ask "Run step #5?"; then step5; fi
+if ask "Run step #6?"; then step6; fi
+
+echo "Done!"
+```
 
 #### Блок 4. Псевдоверсии: при импорте ветки dev
 
 Целью этого блока будет увидеть, как мы получаем псевдоверсию, если выполним что-то типа `go get github.com/user/project@dev`.
+То есть попытаемся подтянуть модуль по имени ветки а не по тегу.
 
-Для этого в модуле dvm создадим ветку dev:
+Давайте тут также применем скрипт на bash.
+Создадим скрипт `block4.bash` в проекте dvm.
+
+Первым делом мы создаем ветку dev для dvm.
 ```bash
+cd "$HOME/dvm"
 git checkout -b dev
 ```
 
-Внесем изменение в файл v2/utils/utils.go
-```go
-func NewFuncForDev() {
+Потом перезаписываем файл $HOME/dvm/v2/utils/utils.go добавив функцию:
+```bash
+cat <<EOF > "$HOME/dvm/v2/utils/utils.go"
+package utils
+
+import "fmt"
+
+func HelloNewAPI() {
     fmt.Println("Hello from utils!")
-	
 }
+
+func NewFuncV0() {
+    fmt.Println("Hello from utils!")
+}
+
+func NewFuncV1() {
+    fmt.Println("Hello from utils!")
+}
+
+func NewFuncForDev() { #NEW FUNC
+    fmt.Println("Hello from utils!")
+}
+EOF
 ```
 
-И сделаем там коммит:
+Далее сделаем коммит и запушим:
 ```bash
 git add .
 git commit -m "added func for dev"
-git push
+git push --set-upstream origin dev || true
 ```
-И введем пароль (один раз).
 
-Нам предложит создать новую удаленную ветку:
+И выполним очистку после которой обновим строку  импорта d ~/first-contact/cmd/api/main.goи  подтянем модуль через go get но по ветке:
 ```bash
-git push --set-upstream origin dev
-```
-И введём пароль (один раз).
+local_clear
 
-А после этого очистим зависимости (удаляем импорт и выполняем `go mod tidy` в модуле fc).
-
-Далее просто выполним:
-```bash
+cd "$HOME/first-contact"
 go get github.com/vysmv/dvm/v2@dev
 ```
 
-В итоге в файле go.mod будет:
+Это все и давайте запустим скрипт.
+
+В итоге в файле go.mod модуля first-contact будет:
 ```go
 require github.com/vysmv/dvm/v2 v2.0.1-0.20251206145623-862197a8af06
 ```
@@ -844,120 +1360,336 @@ require github.com/vysmv/dvm/v2 v2.0.1-0.20251206145623-862197a8af06
 То есть мы увидели ещё один путь, при котором может появиться псевдоверсия.  
 В общем, этот блок завершён, и можем идти дальше.
 
+Полная версия скрипта:
+```bash
+#!/usr/bin/env bash
+
+set -e
+
+local_clear() {
+    local file="$HOME/first-contact/cmd/api/main.go"
+    local workdir="$HOME/first-contact"
+    local saved_line
+
+    # Read and save line 5
+    saved_line="$(sed -n '5p' "$file")"
+
+    # Remove line 5
+    sed -i '5d' "$file"
+
+    # Run go mod tidy in ~/first-contact
+    cd "$workdir"
+    go mod tidy
+
+    # Restore the original line 5
+    sed -i "5i\\$saved_line" "$file"
+}
+
+#######################################
+# DEV BRANCH UPDATE
+#######################################
+
+echo "=== CREATE AND UPDATE DEV BRANCH ==="
+
+# 1. Checkout dev branch in ~/dvm
+cd "$HOME/dvm"
+git checkout -b dev
+
+# 2. Rewrite utils.go for v2
+cat <<EOF > "$HOME/dvm/v2/utils/utils.go"
+package utils
+
+import "fmt"
+
+func HelloNewAPI() {
+    fmt.Println("Hello from utils!")
+}
+
+func NewFuncV0() {
+    fmt.Println("Hello from utils!")
+}
+
+func NewFuncV1() {
+    fmt.Println("Hello from utils!")
+}
+
+func NewFuncForDev() {
+    fmt.Println("Hello from utils!")
+}
+EOF
+
+# 3. Commit and push
+git add .
+git commit -m "added func for dev"
+
+# 4. Push new branch and set upstream
+git push --set-upstream origin dev
+
+# 5. Run local_clear
+local_clear
+
+# 5.1 Rewrite line 5 in main.go to v2 import
+sed -i '5s|.*|    "github.com/vysmv/dvm/v2/utils"|' \
+    "$HOME/first-contact/cmd/api/main.go"
+
+# 6. Go get dev branch in ~/first-contact
+cd "$HOME/first-contact"
+go get github.com/vysmv/dvm/v2@dev
+
+echo "Done."
+```
+
 #### Блок 5. Установка конкретной версии
 
 А теперь посмотрим на такую ситуацию. Допустим, у нас есть версии v2.0.0, v2.2.33 и v2.5.66,  
 и мы хотим понять, как устанавливать конкретно v2.2.33.
 
-Для этого в модуле dvm внесём два изменения.
+Для этого воспользуемся как обычно скриптом.
+Создадим скрипт block5.bash и вставим туда код. 
+Давайте посмотрим что мы тут имеем.
 
-1. Добавим новую функцию в файл dvm/v2/utils/utils.go:
+Первое, переключимся на ветку main:
 ```bash
+cd "$HOME/dvm"
 git switch main
 ```
 
-[После выполнения убедись, что ветка изменилась назад на main.]
+Потом добавим новую функцию в файл dvm/v2/utils/utils.go и 
+```bash
+cat <<EOF > "$HOME/dvm/v2/utils/utils.go"
+package utils
 
-```go
-func NewFuncV2_2_33() {
+import "fmt"
+
+func HelloNewAPI() {
     fmt.Println("Hello from utils!")
-	
 }
+
+func NewFuncV0() {
+    fmt.Println("Hello from utils!")
+}
+
+func NewFuncV1() {
+    fmt.Println("Hello from utils!")
+}
+
+func NewFuncForDev() {
+    fmt.Println("Hello from utils!")
+}
+
+func NewFuncV2_2_33() { #NEW FUNC
+    fmt.Println("Hello from utils!")
+}
+EOF
 ```
 
+После чего сделаем коммит, запушим и сделаем новый тег и запушем его.
 ```bash
-git add . 
+git add .
 git commit -m "added new func for v2.2.33"
 git push
 git tag v2.2.33
 git push --tags
 ```
-Вводим пароль (3 раза).
 
-2. Добавим новую функцию в файл dvm/v2/utils/utils.go:
-```go
-func NewFuncV2_5_66() {
-    fmt.Println("Hello from utils!")
-	
-}
-```
-
-И выполним команды:
+А потом делаю тоже самое но для еще одно й версии (2_5_66).
+Обновлю файл ... и запушу изменения и новый тег.
 ```bash
-git add . 
+cat <<EOF > "$HOME/dvm/v2/utils/utils.go"
+package utils
+
+import "fmt"
+
+func HelloNewAPI() {
+    fmt.Println("Hello from utils!")
+}
+
+func NewFuncV0() {
+    fmt.Println("Hello from utils!")
+}
+
+func NewFuncV1() {
+    fmt.Println("Hello from utils!")
+}
+
+func NewFuncForDev() {
+    fmt.Println("Hello from utils!")
+}
+
+func NewFuncV2_2_33() {
+    fmt.Println("Hello from utils!")
+}
+
+func NewFuncV2_5_66() { #NEW FUNC
+    fmt.Println("Hello from utils!")
+}
+EOF
+
+# 5. Commit, push, tag v2.5.66
+git add .
 git commit -m "added new func for v2.5.66"
 git push
 git tag v2.5.66
 git push --tags
 ```
 
-Вводим пароль (3 раза).
-
-Если мы посмотрим в репозиторий, мы видим созданные теги.
-
-Так вот, если мы теперь просто добавим импорт вида
-```go
-"github.com/vysmv/dvm/v2/utils"
-```
-
-И выполним:
-```go
-go mod tidy
-```
-
-То получим зависимость на:
-```go
-require github.com/vysmv/dvm/v2 v2.5.66
-```
-
-Но как тогда установить зависимость на v2.2.33?
-
-Для этого нужно в ручном режиме выполнить go get.
-
-Давайте сделаем это.
-
-Удалим старые зависимости в модуле fc.
-
-После чего выполним:
+И в завершении выполню очистку и go get с конкретной версией.
 ```bash
+local_clear
+cd "$HOME/first-contact"
 go get github.com/vysmv/dvm/v2@v2.2.33
 ```
 
-А потом снова вставим импорт вида:
-```go
-import "github.com/user/proj/v2/utils"
-```
-
-После чего увидим зависимость вида:
+Как результат мы увидим в файле go.mod модуля first-contact зависимость вида:
 ```go
 require github.com/vysmv/dvm/v2 v2.2.33
 ```
 
 Тут можно продемонстрировать, что теперь функция `NewFuncV2_2_33` доступна, а `NewFuncV2_5_66` — нет.
 
+Финальная версия скрипта:
+```bash
+#!/usr/bin/env bash
+
+set -e
+
+local_clear() {
+    local file="$HOME/first-contact/cmd/api/main.go"
+    local workdir="$HOME/first-contact"
+    local saved_line
+
+    # Read and save line 5
+    saved_line="$(sed -n '5p' "$file")"
+
+    # Remove line 5
+    sed -i '5d' "$file"
+
+    # Run go mod tidy in ~/first-contact
+    cd "$workdir"
+    go mod tidy
+
+    # Restore the original line 5
+    sed -i "5i\\$saved_line" "$file"
+}
+
+#######################################
+# MAIN BRANCH RELEASE FLOW
+#######################################
+
+echo "=== SWITCH TO MAIN ==="
+
+# 1. Switch to main branch
+cd "$HOME/dvm"
+git switch main
+
+#######################################
+# v2.2.33
+#######################################
+
+echo "=== PREPARE v2.2.33 ==="
+
+# 2. Rewrite utils.go for v2.2.33
+cat <<EOF > "$HOME/dvm/v2/utils/utils.go"
+package utils
+
+import "fmt"
+
+func HelloNewAPI() {
+    fmt.Println("Hello from utils!")
+}
+
+func NewFuncV0() {
+    fmt.Println("Hello from utils!")
+}
+
+func NewFuncV1() {
+    fmt.Println("Hello from utils!")
+}
+
+func NewFuncForDev() {
+    fmt.Println("Hello from utils!")
+}
+
+func NewFuncV2_2_33() {
+    fmt.Println("Hello from utils!")
+}
+EOF
+
+# 3. Commit, push, tag v2.2.33
+git add .
+git commit -m "added new func for v2.2.33"
+git push
+git tag v2.2.33
+git push --tags
+
+#######################################
+# v2.5.66
+#######################################
+
+echo "=== PREPARE v2.5.66 ==="
+
+# 4. Rewrite utils.go for v2.5.66
+cat <<EOF > "$HOME/dvm/v2/utils/utils.go"
+package utils
+
+import "fmt"
+
+func HelloNewAPI() {
+    fmt.Println("Hello from utils!")
+}
+
+func NewFuncV0() {
+    fmt.Println("Hello from utils!")
+}
+
+func NewFuncV1() {
+    fmt.Println("Hello from utils!")
+}
+
+func NewFuncForDev() {
+    fmt.Println("Hello from utils!")
+}
+
+func NewFuncV2_2_33() {
+    fmt.Println("Hello from utils!")
+}
+
+func NewFuncV2_5_66() {
+    fmt.Println("Hello from utils!")
+}
+EOF
+
+# 5. Commit, push, tag v2.5.66
+git add .
+git commit -m "added new func for v2.5.66"
+git push
+git tag v2.5.66
+git push --tags
+
+#######################################
+# CONSUMER UPDATE
+#######################################
+
+# 6. Run local_clear
+local_clear
+
+# 7. Get v2.2.33 in first-contact
+cd "$HOME/first-contact"
+go get github.com/vysmv/dvm/v2@v2.2.33
+
+echo "Done."
+```
 ## Резюме 
 
 Вот мы и подошли к концу. В этом видео мы познакомились с Go: установили его, разобрались, что такое бинарник go, и посмотрели на него с точки зрения типичного проекта.
+
 По сути, мы заложили базовый фундамент — тот, который позволяет смотреть на Go глазами инженера, понимающего, как это работает.
 А это первый шаг к тому, чтобы реально работать с Go, а не просто пробовать его на уровне хобби.
 
 Теперь у нас на руках есть всё, что нужно, чтобы смело погружаться глубже и собирать пазл этой технологии в своей голове.
 Честно говоря, я пока не знаю, о чём будет следующее видео — у меня нет заранее подготовленной схемы. Этот плейлист рождается естественным образом, по мере изучения.
-Но логично предположить, что следующим шагом (или серией шагов) будет знакомство с самим языком и его особенностями.
 
-Вероятно, мы затронем такие темы, как:
-
-📚 Работа с документацией
-🔣 Операторы и выражения
-🔀 Управляющие конструкции
-🔧 Функции
-👀 Области видимости
-📏 Массивы
-✂️ Срезы
-
-Ну а дальше — как пойдёт.
-
-Если тема вам интересна, не забывайте ставить лайк, писать комментарии и подписываться.
+Если данное видео показалось вам интересным, то не забывайте ставить лайк и подписываться.
 И буду рад видеть вас в своём Telegram.
 
-Спасибо, что смотрели. Всем пока!
+Спасибо, что досмотрели. Всем пока!
