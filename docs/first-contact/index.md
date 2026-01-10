@@ -233,6 +233,7 @@ go help build
 (Слайд №5)
 
 .
+
 ├── go.mod  
 ├── go.sum  
 ├── cmd/  
