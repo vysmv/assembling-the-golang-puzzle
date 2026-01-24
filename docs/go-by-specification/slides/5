@@ -1,3 +1,1 @@
-Маркеры версий типа:
-
-[Go 1.xx]
+- SliceType = "[" "]" ElementType .

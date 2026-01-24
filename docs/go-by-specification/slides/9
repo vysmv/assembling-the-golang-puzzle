@@ -1,0 +1,4 @@
+SliceType = "[" "]" ElementType .
+                    ^^^^^^^^^^^
+                    non-terminal
+

@@ -1,0 +1,4 @@
+SliceType = "[" "]" ElementType .
+                                ^
+                          end of rule
+

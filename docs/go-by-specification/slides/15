@@ -1,0 +1,9 @@
+slider/
+  go.mod
+  cmd/slider/main.go
+  internal/app/app.go
+  internal/domain/state.go
+  internal/store/store.go
+  internal/store/dir.go
+  internal/ui/term/term.go
+  internal/ui/term/render.go
