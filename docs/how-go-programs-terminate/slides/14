@@ -1,0 +1,1 @@
+func readFile(path string) ([]byte, error)
