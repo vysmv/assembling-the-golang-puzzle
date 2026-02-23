@@ -386,7 +386,7 @@ require github.com/user/proj v0.0.0-<YYYYMMDDHHMMSS>-<commit_hash>
 (Слайд №20)  
 А после этого мы уже можем импортировать в коде пакет из полученного ранее модуля:
 ```go
-import "github.com/user/project/utils" [можно не произносить]
+import "github.com/user/project/utils" 
 ```
 То есть это то же самое, но пакеты ставим мы сами, а не команда `go mod tidy`, которая просто ориентируется на имеющиеся импорты в коде.
 
