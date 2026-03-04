@@ -105,10 +105,104 @@ go handler()
 > А их много. 
 > Возможно в будущем я сделаю отдельный выпуск про runtime.
 
-Для закрепления этой выполним практику. 
+### Практика 
+
+Для закрепления этой темы выполним практику. 
 
 У нас есть исполняемый файл после выполнения команды:
 ```bash
 go build -o cmd/file-size/file-size ./cmd/file-size
 ```
+
+Далее мы можем увидеть всю таблицу символов — функции и данные, которые находятся внутри исполняемого файла:
+```bash
+go tool nm cmd/file-size/file-size
+```
+
+Или найти конкретную функцию:
+```bash
+go tool nm cmd/file-size/file-size | grep main.main
+```
+И увидеть ее адрес | тип | символ
+
+Например можно встретить следующие типы символов:
+T  — функция (text section)
+R  — read-only data
+D  — data
+r  — read-only локальные данные
+
+Так же мы можем найти  функцию из пакета fmt:
+```bash
+go tool nm cmd/file-size/file-size | grep fmt.Fprintln
+```
+Это одна из функций стандартной библиотеки, которая используется внутри fmt.Println.
+Теперь попробуем найти функции runtime:
+```bash
+go tool nm cmd/file-size/file-size | grep runtime.main
+```
+Это функция runtime, которая запускает программу и в дальнейшем вызывает main.main.
+
+Теперь убедимся что действительно происходит удаление неиспользуемых частей кода (dead code elimination). 
+Для этого создадим свой мини пакет:
+```bash
+mkdir -p ./internal/demo && touch internal/demo/demo.go
+```
+Я демонстрирую это на своем пакете, для простоты.
+И добавляем в него код:
+```go
+package demo
+
+func Used() int {
+	return 1
+}
+
+func Unused() int {
+	return 2
+}
+```
+
+Далее в файле `cmd/file-size/main.go` используем только одну:
+```go
+package main
+
+import (
+	"fmt"
+	"github.com/vysmv/go-for-backend/internal/demo"
+)
+
+func main() {
+	_ = demo.Used()
+	fmt.Println("Hi")
+}
+```
+
+И собеберем файл по новой:
+```bash
+rm cmd/file-size/file-size
+eza -lh cmd/file-size
+go build -o cmd/file-size/file-size ./cmd/file-size
+```
+
+После этого мы можем посмотреть на функции из пакета demo:
+```bash
+go tool nm cmd/file-size/file-size | grep demo
+```
+Как результат:
+- Used есть
+- Unused нет
+
+И в завершение посмотрим на компиляцию без части служебных данных.
+В текущем состоянии наш бинарник занимает 2.3 MB:
+```bash
+eza -lh cmd/file-size/file-size
+```
+Давайте удалим его и скомпилируем по новой но c дополнительными флагами `-ldflags="-s -w"`. Этим мы говорим, что часть служебных данных нам не нужна:
+```bash
+rm cmd/file-size/file-size
+eza -lh cmd/file-size
+go build -ldflags="-s -w" -o cmd/file-size/file-size ./cmd/file-size
+eza -lh cmd/file-size
+```
+
+## Аллокация и модель памяти
 
