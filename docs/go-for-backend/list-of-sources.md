@@ -1,0 +1,1 @@
+- [Understanding the Go runtime - Jesus Espino](https://www.youtube.com/watch?v=YpRNFNFaLGY&t=2s) 
