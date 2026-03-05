@@ -1,1 +1,3 @@
 - [Understanding the Go runtime - Jesus Espino](https://www.youtube.com/watch?v=YpRNFNFaLGY&t=2s) 
+- [Understanding the Go Compiler - Jesús Espino](https://www.youtube.com/watch?v=qnmoAA0WRgE)
+- [Article Series](https://internals-for-interns.com/series/)
