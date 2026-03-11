@@ -1,0 +1,4 @@
+- T — функция (text section)
+- R — данные только для чтения (read-only data)
+- D — глобальные данные, которые можно менять (read-write data)
+- r — локальные данные только для чтения (read-only local data)
