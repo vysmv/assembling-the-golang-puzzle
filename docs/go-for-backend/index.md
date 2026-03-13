@@ -760,22 +760,172 @@ runtime.GC()
 
 ## Concurrency
 
+В этом разделе я затрону понятия конкурентности и параллелизма, а так же пройдусь по темам goroutine, планировщик, channels.
+
+### Concurrency and parallelism
+
+Давайте начнём с постановки проблемы и того, как она решается в Go.
+
+Допустим, у нас есть три сектора отображаемых данных:
+```
+header | content | footer
+```
+
+И есть три функции для получения этих данных:
+```
+GetHeader()
+GetFooter()
+GetContent()
+```
+
+Допустим:
+```
+GetHeader()  = 1 секунда
+GetFooter()  = 1 секунда
+GetContent() = 2 секунды
+```
+
+Если выполнять их последовательно, то общее время будет:
+```
+1 + 1 + 2 = 4 секунды
+```
+
+Но проблема в том, что эти функции не зависят друг от друга.
+То есть потенциально они могли бы выполняться паралелльно.
+
+Если бы они выполнялись параллельно, то общее время стало бы равно времени самой медленной операции. То есть две секунды для нашего примера.
+
+Для решения этой задачи Go предоставляет механизм goroutine.
+
+При этом выполнение может происходить двумя способами:
+
+- Concurrency  — задачи переключаются на одном CPU
+- Parallelism  — задачи реально выполняются одновременно
+
+Это можно визуализировать следующим образом.
+```
+Concurrency (1 CPU)
+-------------------------
+
+Header   █ ██   █
+Footer    █  █   █  █
+Content       ██  ██ ████
+CPU:     HFHHFCCHFCCFCCCC
 
 
+Parallelism (несколько CPU)
+-------------------------
 
+CPU 1    Header  ████
+CPU 2    Footer  ████
+CPU 3    Content ████████
+```
+При конкурентном выполнении CPU выделяет один условный квант времени для Header потом Footer, потом снова Header и тд.
 
+А вот при параллельном выполнении все ядра одновременно решают свою задачу.
 
+То есть Go самостоятельно понимает сколько ему доступно ядер CPU, на основе значения переменной окружения и в зависимости от этого работает параллельно или конкурентно. 
 
+### Практика
 
+Давайте посморим на то как это выглядит практике.
 
+Сначала посмотрим на базовый случай — обычный последовательный вызов функций.
+```go
+package main
 
+import (
+	"fmt"
+	"time"
+)
 
+func GetHeader() string {
+	time.Sleep(1 * time.Second)
+	return "header"
+}
 
+func GetFooter() string {
+	time.Sleep(1 * time.Second)
+	return "footer"
+}
 
+func GetContent() string {
+	time.Sleep(2 * time.Second)
+	return "content"
+}
 
+func main() {
+	start := time.Now()
 
+	header := GetHeader()
+	footer := GetFooter()
+	content := GetContent()
 
+	fmt.Println(header, footer, content)
+	fmt.Println("time:", time.Since(start))
+}
+```
+Тут мы видим три функции и их последовательный вызов в main.
+Если запустить этот код, то увидим что общее время выполнения чуть больше четырех секунд. 
+В общем как и ожидалось. 
 
+Второй пример это таже задача но реализованая в трех горутинах и ограниченная одним ядром. 
+То есть это пример конкурентного выполнения.
+```go
+package main
 
+import (
+	"fmt"
+	"runtime"
+	"sync"
+	"time"
+)
 
+func GetHeader() string {
+	time.Sleep(1 * time.Second)
+	return "header"
+}
 
+func GetFooter() string {
+	time.Sleep(1 * time.Second)
+	return "footer"
+}
+
+func GetContent() string {
+	time.Sleep(2 * time.Second)
+	return "content"
+}
+
+func main() {
+	runtime.GOMAXPROCS(1) // одно ядро
+
+	start := time.Now()
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	var header string
+	var footer string
+	var content string
+
+	go func() {
+		defer wg.Done()
+		header = GetHeader()
+	}()
+
+	go func() {
+		defer wg.Done()
+		footer = GetFooter()
+	}()
+
+	go func() {
+		defer wg.Done()
+		content = GetContent()
+	}()
+
+	wg.Wait()
+
+	fmt.Println(header, footer, content)
+	fmt.Println("time:", time.Since(start))
+}
+```
