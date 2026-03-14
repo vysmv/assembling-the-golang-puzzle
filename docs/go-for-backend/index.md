@@ -439,7 +439,7 @@ STACK
 с вершины стека.
 
 Также важно не забывать, что здесь описан механизм для одного стека.
-Но в Go для каждой новой goroutine создаётся отдельный стек.
+А в Go для каждой новой goroutine создаётся отдельный стек.
 
 ### Heap
 
@@ -901,6 +901,96 @@ func main() {
 
 	start := time.Now()
 
+	var wg sync.WaitGroup // создаем группу ожидания
+	wg.Add(3) // говорим, что группа на три горутины
+
+	var header string
+	var footer string
+	var content string
+
+	go func() {
+		defer wg.Done() // докладываем о завершении горутины и убираем текущую из группы ожидания
+		header = GetHeader()
+	}()
+
+	go func() {
+		defer wg.Done()
+		footer = GetFooter()
+	}()
+
+	go func() {
+		defer wg.Done()
+		content = GetContent()
+	}()
+
+	wg.Wait() // Ждем всю группу. Дальше не идем пока не все завершились. 
+
+	fmt.Println(header, footer, content)
+	fmt.Println("time:", time.Since(start))
+}
+```
+И если мы запустим этот код, то увидим что-то близкое к двум секундам. 
+Точнее две с маленьким хвостом.
+
+И тут может возникнуть ощущение, а счего вдруг на одном ядре пусть даже и в режиме конкурентности произошло ускорение работы программы. 
+Ведь CPU выделяет всем по очереди кванты своего внимания но при этом ожидание в каждой горутине состовляет все теже четыре секунды. 
+Но тут смысл в том, что отсчёт ожидания у них начался почти одновременно.
+
+- стартует первая goroutine
+- доходит до Sleep(1s) и засыпает
+- CPU освобождается
+- стартует вторая goroutine
+- тоже уходит в Sleep(1s)
+- стартует третья goroutine
+- уходит в Sleep(2s)
+
+А так как глобальное время продолжает идти то общее время будет равно самой долгой операции. 
+И это приводит к тому, что даже на одном ядре, конкурентное выполнение может быть очень эффективным для задачь ожидающих чего-то (HTTP соединение, запрос к DB и тд.).
+
+Следующим примером посмотрим на ситуацию, когда конкурентное выполнение уже не поможет.
+Допустим у нас есть код:
+```go
+package main
+
+import (
+	"fmt"
+	"runtime"
+	"sync"
+	"time"
+)
+
+const workSize = 150_000_000
+
+func GetHeader() string {
+	cpuWork(workSize)
+	return "header"
+}
+
+func GetFooter() string {
+	cpuWork(workSize)
+	return "footer"
+}
+
+func GetContent() string {
+	cpuWork(workSize * 2)
+	return "content"
+}
+
+func cpuWork(n int) {
+	var x uint64
+	for i := 0; i < n; i++ {
+		x += uint64(i % 7)
+	}
+	if x == 0 {
+		fmt.Println("never")
+	}
+}
+
+func main() {
+	runtime.GOMAXPROCS(1)
+
+	start := time.Now()
+
 	var wg sync.WaitGroup
 	wg.Add(3)
 
@@ -929,3 +1019,141 @@ func main() {
 	fmt.Println("time:", time.Since(start))
 }
 ```
+Тут у нас есть всё плюс минус тоже самое, но задержка достигается не через sleep, а через сложную математическую операцию. 
+То есть в теле каждой функции вызывается `cpuWork` вместо `sleep`.
+А в теле cpuWork крутится цикл с множеством математических операций.
+Так вот при запуске этого кода, я получу что-то около 300 мс. 
+
+И если мы реализуем тоже самое но без горутин:
+```go
+package main
+
+import (
+	"fmt"
+	"runtime"
+	"time"
+)
+
+const workSize = 150_000_000
+
+func GetHeader() string {
+	cpuWork(workSize)
+	return "header"
+}
+
+func GetFooter() string {
+	cpuWork(workSize)
+	return "footer"
+}
+
+func GetContent() string {
+	cpuWork(workSize * 2)
+	return "content"
+}
+
+func cpuWork(n int) {
+	var x uint64
+	for i := 0; i < n; i++ {
+		x += uint64(i % 7)
+	}
+	if x == 0 {
+		fmt.Println("never")
+	}
+}
+
+func main() {
+	runtime.GOMAXPROCS(1)
+
+	start := time.Now()
+
+	var header string
+	var footer string
+	var content string
+
+	header = GetHeader()
+	footer = GetFooter()
+	content = GetContent()
+
+	fmt.Println(header, footer, content)
+	fmt.Println("time:", time.Since(start))
+}
+```
+То запустив этот код увидим, что он также занимает около 300 мс.
+
+То есть если процессор одноядерный, то не всегда имеет смысл, дробить приложение на несколько горутин.
+
+И в завершении еще раз запустим этот пример с горутинами но не будем ограницивать его одним ядром:
+```go
+package main
+
+import (
+	"fmt"
+	//"runtime"
+	"sync"
+	"time"
+)
+
+const workSize = 150_000_000
+
+func GetHeader() string {
+	cpuWork(workSize)
+	return "header"
+}
+
+func GetFooter() string {
+	cpuWork(workSize)
+	return "footer"
+}
+
+func GetContent() string {
+	cpuWork(workSize * 2)
+	return "content"
+}
+
+func cpuWork(n int) {
+	var x uint64
+	for i := 0; i < n; i++ {
+		x += uint64(i % 7)
+	}
+	if x == 0 {
+		fmt.Println("never")
+	}
+}
+
+func main() {
+	//runtime.GOMAXPROCS(1) УБРАЛИ ОГРАНИЧЕНИЕ!
+
+	start := time.Now()
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	var header string
+	var footer string
+	var content string
+
+	go func() {
+		defer wg.Done()
+		header = GetHeader()
+	}()
+
+	go func() {
+		defer wg.Done()
+		footer = GetFooter()
+	}()
+
+	go func() {
+		defer wg.Done()
+		content = GetContent()
+	}()
+
+	wg.Wait()
+
+	fmt.Println(header, footer, content)
+	fmt.Println("time:", time.Since(start))
+}
+```
+То запустив этот код получим около 150 мс. 
+А значит если в распоряжении многоядерный процессор, то Go даст очень хорошую скорость выпонения во всех случаях.
+
+Хорошо, с этим все и двигаемся дальше.
