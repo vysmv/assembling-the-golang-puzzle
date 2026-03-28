@@ -1732,8 +1732,6 @@ G2 делает <-ch
 1. Что такое клиент
 2. Что такое сервер
 3. Что такое HTTP
-4. Что значит «обработать запрос»
-5. Полный путь одного запроса: от клиента до ответа
 
 Давайте пройдемся по ним по порядку. 
 
@@ -1785,7 +1783,7 @@ Host: example.com
 HTTP/1.1 200 OK
 Content-Type: text/plain
 
-Hello, world!
+Hello, world! (может быть, а может и не быть)
 ```
 
 Здесь мы видим запрос, который состоит из:
@@ -1795,13 +1793,14 @@ Hello, world!
    - путь к ресурсу (при необходимости с query-параметрами)
    - версия протокола
 
-Основные методы HTTP:
+Тут добавлю перечисление основных методов HTTP:
 - GET — получить данные
 - POST — отправить данные на сервер, обычно для создания ресурса или обработки данных
 - PUT — полностью заменить ресурс
 - PATCH — частично изменить ресурс
 - DELETE — удалить ресурс
 
+(Возврат к слайду)
 2. Заголовков запроса.  
    В нашем примере заголовок один: `Host: example.com`.  
 
@@ -1826,6 +1825,8 @@ Hello, world!
 
 3. Тела ответа, которое может быть, а может и не быть.
 
+С тим все и идем дальше.
+
 ### Базовые сущности net/http
 
 При работе с вебом у нас есть набор базовых сущностей:
@@ -1837,13 +1838,20 @@ Hello, world!
 - механизм формирования ответа клиенту.
 
 И в Go все эти сущности имеют свое отражение:
-- http.Server
-- http.Request — это представление входящего HTTP-запроса в Go.
-- http.ServeMux
-- http.Handler
-- http.ResponseWriter
+- http.Server — сервер, который ждёт запросы
+- http.Request — запрос клиента
+- http.ServeMux — механизм распределения запросов между обработчиками
+- http.Handler — отдельный обработчик запроса
+- http.ResponseWriter — механизм формирования ответа клиенту
 
-При каждом запросе не отрабатывает весь код, а запрос попадает в код `http.Server` который формирует `http.Request` и запускает `http.ServeMux` который в свою очередь запускает выполнение соответствующего `http.Handler` который приводит к тому что записывается ответ в `http.ResponseWriter`.
+Далее давайте посмотрим на механику того как отрабатывет код получающий запрос.
+
+Важно понимать, что при каждом запросе не отрабатывает весь код приложения.
+Часть веб сервера и приложения составлены в один бинарник.
+Он запускается как процесс ожидающий запросов.
+Каждый запрос попадающий в этот процесс, через механику `http.Server`, формируется в структуру `http.Request` и запускает `http.ServeMux` который в свою очередь запускает выполнение соответствующего запросу `http.Handler` который приводит к тому что записывается ответ в `http.ResponseWriter`.
+
+Давайте посмотрим на это в коде:
 ```go
 package main
 
@@ -1864,13 +1872,19 @@ func main() {
 }
 
 ```
-Если мы запустим этот код и выполним два запроса, то увидим, что `Println("START")` отработает только один раз при старте, а `fmt.Fprintln(w, r)` распечатывающий содержание запроса и `fmt.Fprintln(w, "Hello, world!")` будет отрабатыват в ответ на каждый запрос. 
+Тут мы видим, что функция `ListenAndServe`, которая поднимает веб-сервер и слушает в нашем случае порт 8080, в своем теле создаст структуру `Server` и вызовет ее метод `ListenAndServe`.
 
-Далее давайте немного подробнее посмотрим на каждый элемент.
+Далее при помощи функции `HandleFunc` происходит вызов `handleFunc` c патерном то есть адресом ресурса и обработчиком который будет запущен при запросе этого адреса и делается это все через дефолтный мультиплексор.
+
+Функция `hello` это то что  станет тем самым конкретным обработчиком `http.Handler`.
+
+Так вот, Если мы запустим этот код и выполним два запроса, то увидим, что `Println("START")` отработает только один раз при старте, а `fmt.Fprintln(w, r)` распечатывающий содержание запроса и `fmt.Fprintln(w, "Hello, world!")` будет отрабатывать в ответ на каждый запрос. 
 
 #### http.Request
 
-Начнем с `http.Request`.
+Далее давайте посмотрим на `http.Request`.
+Back-end разработчику в первую очередь нужно понимать, как работать с пришедшим запросом. 
+
 Значение этого типа будет содержать в себе весь набор данных пришедших в запросе. 
 
 Для удобного просмотра содержимого используем пакет `net/http/httputil`.
@@ -1894,7 +1908,7 @@ func hello(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	fmt.Println("START")
-	http.HandleFunc("/hello", hello)
+	http.HandleFunc("/", hello)
 	http.ListenAndServe(":8080", nil)
 }
 ```
@@ -1909,269 +1923,42 @@ func main() {
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
-	"log"
-	"mime"
 	"net/http"
-	"strings"
 )
 
-type JSONPayload struct {
-	Name  string `json:"name"`
-	Email string `json:"email"`
-}
+func debugHandler(w http.ResponseWriter, r *http.Request) {
+	fmt.Fprintln(w, "**ДАННЫЕ START LINE**")
+	fmt.Fprintln(w, "Method: ", r.Method)
+	fmt.Fprintln(w, "URL: ", r.URL)
+	fmt.Fprintln(w, "Path: ", r.URL.Path)
+	fmt.Fprintln(w, "Raw query: ", r.URL.RawQuery)
+	fmt.Fprintln(w, "Protocol: ", r.Proto)
+	fmt.Fprintln(w, "")
 
-func handler(w http.ResponseWriter, r *http.Request) {
-	fmt.Println("==================================================")
-	fmt.Println("1. START LINE / ОСНОВНАЯ ИНФОРМАЦИЯ")
-	fmt.Println("==================================================")
-	fmt.Println("Method:     ", r.Method)
-	fmt.Println("RequestURI: ", r.RequestURI)
-	fmt.Println("Proto:      ", r.Proto)
-	fmt.Println("Host:       ", r.Host)
-	fmt.Println("RemoteAddr: ", r.RemoteAddr)
-	fmt.Println("URL.String():", r.URL.String())
-	fmt.Println("URL.Scheme: ", r.URL.Scheme)
-	fmt.Println("URL.Host:   ", r.URL.Host)
-	fmt.Println("URL.Path:   ", r.URL.Path)
-	fmt.Println("URL.RawPath:", r.URL.RawPath)
-	fmt.Println("URL.RawQuery:", r.URL.RawQuery)
-	fmt.Println("URL.Fragment:", r.URL.Fragment)
-
-	fmt.Println()
-	fmt.Println("==================================================")
-	fmt.Println("2. QUERY-ПАРАМЕТРЫ")
-	fmt.Println("==================================================")
-	query := r.URL.Query()
-	for key, values := range query {
-		fmt.Printf("%s = %v\n", key, values)
+	fmt.Fprintln(w, "**HEADERS**")
+	fmt.Fprintln(w, "All headers: ")
+	for i, v := range r.Header {
+		fmt.Fprintln(w, " - ", i, ":", v)
 	}
-	fmt.Println(`Query.Get("id"):`, query.Get("id"))
+	fmt.Fprintln(w, "One header: ", r.Header.Get("User-Agent"))
+	fmt.Fprintln(w, "Host:", r.Host) // 
+	fmt.Fprintln(w, "")
 
-	fmt.Println()
-	fmt.Println("==================================================")
-	fmt.Println("3. ЗАГОЛОВКИ")
-	fmt.Println("==================================================")
-	for key, values := range r.Header {
-		fmt.Printf("%s = %v\n", key, values)
-	}
-	fmt.Println("User-Agent:   ", r.Header.Get("User-Agent"))
-	fmt.Println("Content-Type: ", r.Header.Get("Content-Type"))
-	fmt.Println("Authorization:", r.Header.Get("Authorization"))
-
-	fmt.Println()
-	fmt.Println("==================================================")
-	fmt.Println("4. СЛУЖЕБНЫЕ ПОЛЯ ЗАПРОСА")
-	fmt.Println("==================================================")
-	fmt.Println("ContentLength:", r.ContentLength)
-	fmt.Println("TransferEncoding:", r.TransferEncoding)
-	fmt.Println("Close:", r.Close)
-
-	fmt.Println()
-	fmt.Println("==================================================")
-	fmt.Println("5. COOKIES")
-	fmt.Println("==================================================")
-	cookies := r.Cookies()
-	if len(cookies) == 0 {
-		fmt.Println("Cookies: none")
-	} else {
-		for _, c := range cookies {
-			fmt.Printf("Cookie: %s=%s\n", c.Name, c.Value)
-		}
-	}
-
-	if c, err := r.Cookie("session_id"); err == nil {
-		fmt.Println("session_id cookie:", c.Value)
-	} else {
-		fmt.Println("session_id cookie: not found")
-	}
-
-	fmt.Println()
-	fmt.Println("==================================================")
-	fmt.Println("6. BASIC AUTH")
-	fmt.Println("==================================================")
-	if username, password, ok := r.BasicAuth(); ok {
-		fmt.Println("BasicAuth username:", username)
-		fmt.Println("BasicAuth password:", password)
-	} else {
-		fmt.Println("BasicAuth: none")
-	}
-
-	fmt.Println()
-	fmt.Println("==================================================")
-	fmt.Println("7. TLS")
-	fmt.Println("==================================================")
-	if r.TLS != nil {
-		fmt.Println("TLS version:", r.TLS.Version)
-		fmt.Println("TLS handshake complete:", r.TLS.HandshakeComplete)
-		fmt.Println("TLS server name:", r.TLS.ServerName)
-	} else {
-		fmt.Println("TLS: no (обычный HTTP или TLS завершился до приложения)")
-	}
-
-	fmt.Println()
-	fmt.Println("==================================================")
-	fmt.Println("8. CONTEXT")
-	fmt.Println("==================================================")
-	ctx := r.Context()
-	fmt.Println("Context err:", ctx.Err())
-
-	fmt.Println()
-	fmt.Println("==================================================")
-	fmt.Println("9. BODY (RAW)")
-	fmt.Println("==================================================")
-
-	// Body — это поток. Если мы его прочитаем, он закончится.
-	// Поэтому читаем в bytes, сохраняем, и при необходимости
-	// восстанавливаем r.Body обратно.
-	rawBody, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "failed to read body", http.StatusBadRequest)
-		return
-	}
-
-	fmt.Println("Raw body bytes len:", len(rawBody))
-	fmt.Println("Raw body as string:")
-	fmt.Println(string(rawBody))
-
-	// ВАЖНО:
-	// после io.ReadAll(r.Body) поток пуст.
-	// Если ниже мы хотим ещё раз его разбирать, надо восстановить r.Body.
-	r.Body = io.NopCloser(bytes.NewReader(rawBody))
-
-	fmt.Println()
-	fmt.Println("==================================================")
-	fmt.Println("10. CONTENT-TYPE РАЗБОР")
-	fmt.Println("==================================================")
-	contentType := r.Header.Get("Content-Type")
-	mediaType, params, err := mime.ParseMediaType(contentType)
-	if err != nil {
-		fmt.Println("ParseMediaType error:", err)
-	} else {
-		fmt.Println("MediaType:", mediaType)
-		fmt.Println("Params:", params)
-	}
-
-	fmt.Println()
-	fmt.Println("==================================================")
-	fmt.Println("11. FORM / POSTFORM / MULTIPART")
-	fmt.Println("==================================================")
-
-	// ParseForm:
-	// - query string -> попадёт в r.Form
-	// - application/x-www-form-urlencoded body -> попадёт в r.Form и r.PostForm
-	//
-	// ParseMultipartForm:
-	// - multipart/form-data
-	// - текстовые поля -> MultipartForm.Value
-	// - файлы -> MultipartForm.File
-	//
-	// Важно: не все типы body являются form.
-	switch {
-	case strings.HasPrefix(mediaType, "application/x-www-form-urlencoded"):
-		// Перед ParseForm восстанавливаем Body, потому что выше уже читали raw body.
-		r.Body = io.NopCloser(bytes.NewReader(rawBody))
-
-		if err := r.ParseForm(); err != nil {
-			fmt.Println("ParseForm error:", err)
-		} else {
-			fmt.Println("r.Form:")
-			for key, values := range r.Form {
-				fmt.Printf("%s = %v\n", key, values)
-			}
-
-			fmt.Println("r.PostForm:")
-			for key, values := range r.PostForm {
-				fmt.Printf("%s = %v\n", key, values)
-			}
-
-			fmt.Println(`FormValue("name"):`, r.FormValue("name"))
-			fmt.Println(`PostFormValue("name"):`, r.PostFormValue("name"))
-		}
-
-	case strings.HasPrefix(mediaType, "multipart/form-data"):
-		// Перед ParseMultipartForm тоже восстанавливаем Body.
-		r.Body = io.NopCloser(bytes.NewReader(rawBody))
-
-		if err := r.ParseMultipartForm(32 << 20); err != nil {
-			fmt.Println("ParseMultipartForm error:", err)
-		} else if r.MultipartForm != nil {
-			fmt.Println("MultipartForm.Value:")
-			for key, values := range r.MultipartForm.Value {
-				fmt.Printf("%s = %v\n", key, values)
-			}
-
-			fmt.Println("MultipartForm.File:")
-			for fieldName, files := range r.MultipartForm.File {
-				for _, fh := range files {
-					fmt.Printf("field=%s filename=%s size=%d header=%v\n",
-						fieldName, fh.Filename, fh.Size, fh.Header)
-				}
-			}
-
-			// Пример: получить один файл по имени поля "file"
-			file, fileHeader, err := r.FormFile("file")
-			if err != nil {
-				fmt.Println(`FormFile("file") error:`, err)
-			} else {
-				defer file.Close()
-
-				fileData, err := io.ReadAll(file)
-				if err != nil {
-					fmt.Println("read uploaded file error:", err)
-				} else {
-					fmt.Printf("Uploaded file: name=%s size=%d real_read=%d\n",
-						fileHeader.Filename, fileHeader.Size, len(fileData))
-				}
-			}
-		}
-
-	default:
-		fmt.Println("Form parsing skipped: body is not form-urlencoded and not multipart/form-data")
-	}
-
-	fmt.Println()
-	fmt.Println("==================================================")
-	fmt.Println("12. JSON BODY")
-	fmt.Println("==================================================")
-	if strings.HasPrefix(mediaType, "application/json") {
-		// Для JSON снова восстанавливаем Body.
-		r.Body = io.NopCloser(bytes.NewReader(rawBody))
-
-		var payload JSONPayload
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			fmt.Println("JSON decode error:", err)
-		} else {
-			fmt.Printf("Decoded JSON: %+v\n", payload)
-		}
-	} else {
-		fmt.Println("JSON parsing skipped: Content-Type is not application/json")
-	}
-
-	fmt.Println()
-	fmt.Println("==================================================")
-	fmt.Println("13. ЧТО ЕЩЁ МОЖНО ДОСТАТЬ")
-	fmt.Println("==================================================")
-	fmt.Println("Referer:", r.Referer())
-	fmt.Println(`Header.Get("Accept"):`, r.Header.Get("Accept"))
-	fmt.Println(`Header.Get("Accept-Encoding"):`, r.Header.Get("Accept-Encoding"))
-	fmt.Println(`Header.Get("X-Forwarded-For"):`, r.Header.Get("X-Forwarded-For"))
-	fmt.Println(`Header.Get("X-Real-IP"):`, r.Header.Get("X-Real-IP"))
-
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("ok\n"))
+	fmt.Fprintln(w, "**BODY**")
+	body, _ := io.ReadAll(r.Body) // []byte
+	fmt.Fprintln(w, string(body))
 }
 
 func main() {
-	http.HandleFunc("/", handler)
-
-	log.Println("listen :8080")
-	if err := http.ListenAndServe(":8080", nil); err != nil {
-		log.Fatal(err)
-	}
+	http.HandleFunc("/", debugHandler)
+	http.ListenAndServe(":8080", nil)
 }
 ```
+Запустив этот код и сделав запрос через Postman, мы увидим все данные запроса. 
+Но нужно учитывать что при таком способе получения тела запроса, все тело будет одной строкой. 
+То есть как правило это будет не самый удобный способ.
+По тому что например если запрос будет методом POST с типом `application/x-www-form-urlencoded` или тело будет содержать json, то для этого есть более удобные способы. 
+Мы посмотрим на них чуть позже.
+Также нужно учитывать, что заголовок Host исключен из общего списка заголовков и для его получения используется `r.Host`.
