@@ -1923,6 +1923,7 @@ func main() {
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
@@ -1933,7 +1934,8 @@ func debugHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintln(w, "Method: ", r.Method)
 	fmt.Fprintln(w, "URL: ", r.URL)
 	fmt.Fprintln(w, "Path: ", r.URL.Path)
-	fmt.Fprintln(w, "Raw query: ", r.URL.RawQuery)
+	fmt.Fprintln(w, "Raw query: ", r.URL.RawQuery) // string
+	fmt.Fprintln(w, "Raw query: ", r.URL.Query())  // map
 	fmt.Fprintln(w, "Protocol: ", r.Proto)
 	fmt.Fprintln(w, "")
 
@@ -1943,11 +1945,13 @@ func debugHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, " - ", i, ":", v)
 	}
 	fmt.Fprintln(w, "One header: ", r.Header.Get("User-Agent"))
-	fmt.Fprintln(w, "Host:", r.Host) // 
+	fmt.Fprintln(w, "One header: ", r.ContentLength)
+	fmt.Fprintln(w, "Host:", r.Host)
 	fmt.Fprintln(w, "")
 
 	fmt.Fprintln(w, "**BODY**")
 	body, _ := io.ReadAll(r.Body) // []byte
+	//r.Body = io.NopCloser(bytes.NewBuffer(body)) 
 	fmt.Fprintln(w, string(body))
 }
 
@@ -1956,9 +1960,202 @@ func main() {
 	http.ListenAndServe(":8080", nil)
 }
 ```
+Тут мы види секции start line, headers и body.
 Запустив этот код и сделав запрос через Postman, мы увидим все данные запроса. 
 Но нужно учитывать что при таком способе получения тела запроса, все тело будет одной строкой. 
-То есть как правило это будет не самый удобный способ.
-По тому что например если запрос будет методом POST с типом `application/x-www-form-urlencoded` или тело будет содержать json, то для этого есть более удобные способы. 
+То есть зачастую это будет не самый удобный способ.
+По тому что например если запрос будет методом POST с типом `application/x-www-form-urlencoded` и будут отправлены поля формы или тело будет содержать json, то для этого есть более удобные способы.
+Сырую строку `body` получают только тогда когда она нужна именно в том виде как пришла.
+Например для логирования или чтения какой то подписи запроса.  
 Мы посмотрим на них чуть позже.
+И важно понимать, что если мы считали через `ReadAll` `r.Body`, то считать его второй раз в другом месте кода будет невозможно, так как он уже будет пустой.
+Если нужно, чтобы в другом месте кода был доступен `Body` но при этом передавать его по коду неудобно, то просто после первого чтения нужно востановить поток при помощи этой строки кода.
+
 Также нужно учитывать, что заголовок Host исключен из общего списка заголовков и для его получения используется `r.Host`.
+
+Далее посмотрим на удобные способы получения типичных наборов данных.
+
+**Данные из URL**
+Тут все относительно просто.
+Параметры строки запроса получаем через:
+```go
+r.URL.Query()
+```
+Это наиболее удобный вариант, а вот с получением условного id из пути типа /users/123 как самостоятельной сущности не предусмотрено в пакете net/http. 
+Для этого необходимо либо парсит `r.URL.Path` разделяя например по слешу или использовать для раутинга пакеты типа chi.
+Это позволит писать код привычного для фреймворков вида:
+```go
+r.Get("/users/{id}", handler)
+id := chi.URLParam(r, "id")
+```
+Тут мы сначала регистрируем маршрут, а потом получаем динамическую часть по имени `id`.
+
+**Cookies**
+Далее посмотрим на получение Cookies.
+По сути тут все просто, можно получить как отдельную куку по имени так и все:
+```go
+r.Cookie("name")
+r.Cookies()
+```
+
+**Данные из body по типу содержимого**
+
+Далее посмотрим на получение содержания `body` по типу содержимого.
+Например запрос может быть любым методом, но при этом с заголовком `Content-Type: application/json`.
+Для получения такого тела можно использовать код следующего примера:
+```go
+type Request struct {
+	Key string `json:"key"`
+}
+
+func handler(w http.ResponseWriter, r *http.Request) {
+	var req Request
+
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	fmt.Fprintf(w, "key = %s", req.Key)
+}
+``` 
+Тут мы сосздаем структуру отражающую пришедший `json`, парсим в нее `body` и потом уже работаем с экземпляром этой структуры.
+
+**Multipart / file upload**
+Теперь посмотрим на случай когда в теле запроса пришел файл и обычное текстовое поле.
+То есть в заголовках указано `Content-Type: multipart/form-data`.
+Для этого откроем следующий пример кода:
+```go
+package main
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+)
+
+func uploadHandler(w http.ResponseWriter, r *http.Request) {
+	// 1. Проверяем метод
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// 2. Ограничиваем размер (например 10MB)
+	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
+
+	// 3. Парсим multipart форму
+	err := r.ParseMultipartForm(10 << 20) // 10MB
+	if err != nil {
+		http.Error(w, "failed to parse form", http.StatusBadRequest)
+		return
+	}
+
+	// 4. Получаем обычное поле формы
+	username := r.FormValue("username")
+
+	// 5. Получаем файл
+	file, fileHeader, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "failed to get file", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	// fileHeader содержит метаданные
+	fmt.Println("Filename:", fileHeader.Filename)
+	fmt.Println("Size:", fileHeader.Size)
+	fmt.Println("Header:", fileHeader.Header)
+
+	// 6. Создаём файл на сервере
+	dst, err := os.Create("./uploads/" + fileHeader.Filename)
+	if err != nil {
+		http.Error(w, "failed to create file", http.StatusInternalServerError)
+		return
+	}
+	defer dst.Close()
+
+	// 7. Копируем содержимое
+	_, err = io.Copy(dst, file)
+	if err != nil {
+		http.Error(w, "failed to save file", http.StatusInternalServerError)
+		return
+	}
+
+	// 8. Ответ
+	fmt.Fprintf(w, "file uploaded successfully, user=%s", username)
+}
+
+func main() {
+	http.HandleFunc("/upload", uploadHandler)
+	http.ListenAndServe(":8080", nil)
+}
+```
+
+**Form data**
+Далее посмотрим как работать с запросом если происходит запрос с заголовком `Content-Type: application/x-www-form-urlencoded`.
+Для этого посмотрим на такой пример кода:
+```go
+package main
+
+import (
+	"fmt"
+	"net/http"
+)
+
+func formHandler(w http.ResponseWriter, r *http.Request) {
+	// 1. Проверяем метод
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// 2. Парсим форму
+	err := r.ParseForm()
+	if err != nil {
+		http.Error(w, "failed to parse form", http.StatusBadRequest)
+		return
+	}
+
+	// 3. Получаем значения
+
+	// Вариант 1: через FormValue (самый удобный)
+	name := r.FormValue("name")
+	age := r.FormValue("age")
+
+	// Вариант 2: через r.Form (map[string][]string)
+	allForm := r.Form
+
+	// Вариант 3: доступ к множественным значениям
+	tags := r.Form["tags"] // []string
+
+	// 4. Ответ
+	fmt.Fprintf(w, "name=%s, age=%s\n", name, age)
+	fmt.Fprintf(w, "all form=%v\n", allForm)
+	fmt.Fprintf(w, "tags=%v\n", tags)
+}
+
+func main() {
+	http.HandleFunc("/form", formHandler)
+	http.ListenAndServe(":8080", nil)
+}
+```
+
+В качестве дополнения упомяну о пулучении ip и порта клиента:
+```go
+r.RemoteAddr
+```
+но если запрос приходит через revers proxy, то при помощи заголовков:
+```
+X-Forwarded-For
+X-Real-IP
+```
+
+А также механику получения контекста запроса `ctx := r.Context()`.
+Сильно останавливаться на этом не буду но вкратце скажу что нужно это для того, чтобы остановить выполнение на сервере если запрос уже не актуален. Например закрыли браузер. 
+
+С этой темой все и идем дальше. 
+
+
