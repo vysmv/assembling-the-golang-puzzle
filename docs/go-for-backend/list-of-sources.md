@@ -2,4 +2,5 @@
 - [Understanding the Go Compiler - Jesús Espino](https://www.youtube.com/watch?v=qnmoAA0WRgE)
 - [Article Series](https://internals-for-interns.com/series/)
 - [Что такое каналы в Go. Нияз | Golang с нуля](https://www.youtube.com/watch?v=4z1oowlz_TM)
+- [Writing Web Applications](https://go.dev/doc/articles/wiki/)
 - 
