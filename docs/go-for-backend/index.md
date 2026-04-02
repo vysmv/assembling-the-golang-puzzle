@@ -2545,4 +2545,48 @@ mkdir -p cmd/task-manager-api \
 touch cmd/task-manager-api/main.go
 ```
 
-## 
+## Первая итерация сборки
+
+На данном этапе я создам следующую структуру:
+```
+task-manager/
+├── cmd/
+│   └── task-manager-api/
+│       └── main.go
+│
+├── internal/
+│   ├── handler/
+│   │   └── task/
+│   │       └── handler.go
+│   │
+│   ├── service/
+│   │   └── task/
+│   │       └── service.go
+│   │
+│   ├── repository/
+│   │   └── task/
+│   │       └── memory.go
+│   │
+│   └── model/
+│       └── task.go
+│
+├── go.mod
+```
+
+И в ней реализую следующую логику:
+```
+main
+  ↓
+создаёт repository
+  ↓
+передаёт его в service
+  ↓
+передаёт service в handler
+  ↓
+handler регистрируется в router
+  ↓
+HTTP сервер начинает принимать запросы
+```
+
+Это ручная сборка зависимостей (dependency injection) [тут не ясно].
+
