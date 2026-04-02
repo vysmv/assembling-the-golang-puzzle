@@ -2545,9 +2545,4 @@ mkdir -p cmd/task-manager-api \
 touch cmd/task-manager-api/main.go
 ```
 
-И так, я создал в директории `internal` пять отдельных зон ответственноти.
-Это будущие пакеты. 
-
-
-
 ## 
