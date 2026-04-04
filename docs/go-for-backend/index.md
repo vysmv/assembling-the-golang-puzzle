@@ -2476,8 +2476,179 @@ cmd/<app-name>/main.go
 - добавляем базовый health endpoint,
 - сразу закладываем архитектуру, которую потом будем расширять.
 
+На старте у меня есть просто директория `task-manager-api` и в ней файл go.mod с именем проекта на GitHub.
+То есть импорты всех внутрених пакетов будут иметь вид:
+```
+import "github.com/vysmv/task-manager-api/internal/pkg-name"
+```
 
+Далее создадим базовую структуру проекта такого вида:
+```
+task-manager-api/
+├── cmd/
+│   └── task-manager-api/
+│       └── main.go
+├── internal/
+│   ├── app/
+│   │   └── app.go
+│   ├── config/
+│   │   └── config.go
+│   ├── http/
+│   │   ├── handlers/
+│   │   │   └── health.go
+│   │   └── response/
+│   │       └── json.go
+│   └── tasks/
+└── go.mod
+```
 
+[тех. шаг. Удалить.]
+```bash
+mkdir -p cmd/task-manager-api
+mkdir -p internal/app
+mkdir -p internal/http/handlers
+mkdir -p internal/http/response
+mkdir -p internal/config
+mkdir -p internal/tasks
+
+touch cmd/task-manager-api/main.go
+touch internal/app/app.go
+touch internal/config/config.go
+touch internal/http/handlers/health.go
+touch internal/http/response/json.go
+```
+
+Я не буду писать код руками, это лишняя трата времени. 
+Просто перейду на тег `step1` и посмотрим состояние проекта.
+
+Если бегло разберать структуру по смыслу, то получится такая картина:
+**cmd/task-manager-api/** - здесь лежит main.go. Это место, где приложение настраивается и запускается.
+
+**internal/app/** - это и есть само приложение в котором отрабатывают различные его части.
+
+**internal/http/handlers/** - здесь будут HTTP-handlers.
+
+Их задача:
+
+- получить http.Request,
+- разобрать параметры,
+- провалидировать вход,
+- вызвать бизнес-логику,
+- вернуть HTTP-ответ.
+
+**internal/http/response/** - здесь удобно держать вспомогательные функции для JSON-ответов:
+
+- вернуть JSON,
+- вернуть ошибку,
+- проставить Content-Type,
+- задать status code.
+
+Это избавляет handlers от повторяющегося кода.
+
+**internal/config/** - соответственно тут будет конфигурация приложения. 
+
+**internal/tasks/** - не совсем понял смысл директории.!!!
+
+И давайте посмотрим на код созданых файлов:
+
+**cmd/task-manager-api/main.go**:
+```go
+package main
+
+import (
+	"log"
+
+	"github.com/vysmv/task-manager-api/internal/app"
+)
+
+func main() {
+	if err := app.Run(); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+**internal/app/app.go**:
+```go
+package app
+
+import (
+	"fmt"
+	"net/http"
+
+	"github.com/vysmv/task-manager-api/internal/config"
+	"github.com/vysmv/task-manager-api/internal/http/handlers"
+)
+
+func Run() error {
+	cfg := config.MustLoad()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", handlers.Health)
+
+	server := &http.Server{
+		Addr:    ":" + cfg.HTTPPort,
+		Handler: mux,
+	}
+
+	fmt.Printf("server started on :%s\n", cfg.HTTPPort)
+
+	return server.ListenAndServe()
+}
+```
+
+**internal/http/handlers/health.go**:
+```go
+package handlers
+
+import (
+	"net/http"
+
+	"github.com/vysmv/task-manager-api/internal/http/response"
+)
+
+func Health(w http.ResponseWriter, r *http.Request) {
+	response.WriteJSON(w, http.StatusOK, map[string]string{
+		"status": "ok",
+	})
+}
+```
+
+**internal/http/response/json.go**:
+```go
+package response
+
+import (
+	"encoding/json"
+	"net/http"
+)
+
+func WriteJSON(w http.ResponseWriter, status int, data any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+
+	if data == nil {
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(data)
+}
+```
+
+**internal/config/config.go**:
+```go
+package config
+
+type Config struct {
+	HTTPPort string
+}
+
+func MustLoad() Config {
+	return Config{
+		HTTPPort: "8080",
+	}
+}
+```
 
 
 
