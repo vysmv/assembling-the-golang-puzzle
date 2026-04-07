@@ -2466,7 +2466,7 @@ cmd/<app-name>/main.go
 
 Двигаться я буду итеративно, показывая как усложняется проект на каждом шагу.
 
-#### Итерация 1.
+#### Итерация 1
 
 В этой части мы делаем фундамент:
 
@@ -2498,7 +2498,6 @@ task-manager-api/
 │   │   │   └── health.go
 │   │   └── response/
 │   │       └── json.go
-│   └── tasks/
 └── go.mod
 ```
 
@@ -2519,8 +2518,7 @@ touch internal/http/response/json.go
 ```
 
 Я не буду писать код руками, это лишняя трата времени. 
-Просто перейду на тег `step1` и посмотрим состояние проекта.
-То есть я буду проходить по тегам и последовательно демонстрировать как и зачем меняется состояние приложения.
+Просто буду переходить по тегам демонстрации и анлизировать текущее состояние.
 
 Если бегло разберать структуру по смыслу, то получится такая картина:
 **cmd/task-manager-api/** - здесь лежит main.go. Это место, где приложение настраивается и запускается.
@@ -2547,8 +2545,6 @@ touch internal/http/response/json.go
 Это избавляет handlers от повторяющегося кода.
 
 **internal/config/** - соответственно тут будет конфигурация приложения. 
-
-**internal/tasks/** - не совсем понял смысл директории.!!!
 
 И давайте посмотрим на код созданых файлов:
 
@@ -2651,8 +2647,8 @@ func MustLoad() Config {
 }
 ```
 
-И что мы видем в этом коде?
-**main.go** -  вызывает метод `Run` из пакета `app`. То есть просто запускаем приложение.
+И что мы видим в этом коде?
+**main.go** -  вызывает метод `Run` из пакета `app`. То есть просто запускает приложение.
 Или завершается через `Fatal` пакета `log` если `Run` вернет ошибку.
 
 Далее посмотрим на `app`.
@@ -2668,7 +2664,7 @@ func MustLoad() Config {
 На данный момент это структура с одним полем и одним методом. 
 
 И в `app` еще фигурировала функция `Health` из пакета `handlers`.
-Давайте посмотрим.
+Давайте посмотрим на нее.
 
 Тут мы видим один конечный эндпоинт `Health` в теле которого вызывается `WriteJSON` из пакета `response`.
 
@@ -2676,6 +2672,905 @@ func MustLoad() Config {
 В теле этой функции просто определяется заголовок `Content-Type` и статус ответа.
 И если тело есть, то оно преобразовуется в json.
 
+Давайте сделаем тестовый запрос:
+```
+curl http://localhost:8080/health
+```
+Как результат видим:
+```
+{"status":"ok"}
+```
+
+#### Итерация 2
+
+Теперь я переключюсь на tag step2 и посмотрим как изменилось состояние проекта.
+
+В этой части мы:
+
+- вводим модель Task,
+- добавляем handlers для tasks,
+- делаем ручную маршрутизацию (без сторонних роутеров),
+- подготавливаем структуру под будущий CRUD,
+- осознанно не трогаем БД — пока работаем “в памяти”.
+
+Для начала введем доменную модель.
+Для этого создан пакет tasks **internal/tasks/task.go**.
+```go
+package tasks
+
+type Task struct {
+	ID    int64  `json:"id"`
+	Title string `json:"title"`
+	Done  bool   `json:"done"`
+}
+```
+Пакет `tasks` — это доменный слой приложения. 
+Он объединяет всё, что связано с сущностью задачи: её модель, бизнес-логику и контракты работы с данными. 
+Потенциально это не только структура, а целый контекст работы с задачами.
+
+Далее у нас появился файл **internal/tasks/memory.go**
+```go
+package tasks
+
+import "sync"
+
+type MemoryStorage struct {
+	mu    sync.RWMutex
+	tasks map[int64]Task
+	nextID int64
+}
+
+func NewMemoryStorage() *MemoryStorage {
+	return &MemoryStorage{
+		tasks:  make(map[int64]Task),
+		nextID: 1,
+	}
+}
+
+func (s *MemoryStorage) Create(title string) Task {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	task := Task{
+		ID:    s.nextID,
+		Title: title,
+		Done:  false,
+	}
+
+	s.tasks[s.nextID] = task
+	s.nextID++
+
+	return task
+}
+
+func (s *MemoryStorage) List() []Task {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	result := make([]Task, 0, len(s.tasks))
+
+	for _, t := range s.tasks {
+		result = append(result, t)
+	}
+
+	return result
+}
+
+func (s *MemoryStorage) Get(id int64) (Task, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	t, ok := s.tasks[id]
+	return t, ok
+}
+
+func (s *MemoryStorage) Delete(id int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.tasks[id]; !ok {
+		return false
+	}
+
+	delete(s.tasks, id)
+	return true
+}
+```
+Тут мы создаем структуру и функцию создания ее экземпляра. 
+Структура состоит из трех полей:
+- mu: это мьютекс позволяющий блокировать работу со структурой во время чтения или записи, чтобы небыло гонки данных. 
+- tasks: это проста мапа отдельных Task
+- nextID: это текущий свободный айдишник с которым будет создаваться Task в мапе.
+
+Собственно говоря, это просто способ хранить таски между разными запросами в памяти, без использования БД или файлов.
+Это исключительно демонстрационный вариант.
+Просто чтобы не вводить разбор работы с базой раньше времени. 
+
+И ниже у нас есть методы позволяющие работать с хранилищем: 
+- Create - создание Task
+- List - получить весь список Task 
+- Get - получение отдельного Task по его id
+- Delete - удаление Task
+
+Они все имеют механику блокировки пока идет работа и разблокировки через defer.
+
+Я положил файл internal/tasks/memory.go в пакет tasks просто как временное решение. 
+Чтобы не плодить дополнительные сущности раньше времени.
+
+Следующий шаг это создание обработчиков для tasks в файле `internal/http/handlers/tasks.go`.
+```go
+package handlers
+
+import (
+	"encoding/json"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/vysmv/task-manager-api/internal/http/response"
+	"github.com/vysmv/task-manager-api/internal/tasks"
+)
+
+type TasksHandler struct {
+	storage *tasks.MemoryStorage
+}
+
+func NewTasksHandler(storage *tasks.MemoryStorage) *TasksHandler {
+	return &TasksHandler{storage: storage}
+}
+
+func (h *TasksHandler) Create(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Title string `json:"title"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.WriteJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "invalid json",
+		})
+		return
+	}
+
+	if strings.TrimSpace(req.Title) == "" {
+		response.WriteJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "title is required",
+		})
+		return
+	}
+
+	task := h.storage.Create(req.Title)
+
+	response.WriteJSON(w, http.StatusCreated, task)
+}
+
+func (h *TasksHandler) List(w http.ResponseWriter, r *http.Request) {
+	tasks := h.storage.List()
+
+	response.WriteJSON(w, http.StatusOK, tasks)
+}
+
+func (h *TasksHandler) Get(w http.ResponseWriter, r *http.Request) {
+	idStr := strings.TrimPrefix(r.URL.Path, "/tasks/")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		response.WriteJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "invalid id",
+		})
+		return
+	}
+
+	task, ok := h.storage.Get(id)
+	if !ok {
+		response.WriteJSON(w, http.StatusNotFound, map[string]string{
+			"error": "task not found",
+		})
+		return
+	}
+
+	response.WriteJSON(w, http.StatusOK, task)
+}
+
+func (h *TasksHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	idStr := strings.TrimPrefix(r.URL.Path, "/tasks/")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		response.WriteJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "invalid id",
+		})
+		return
+	}
+
+	ok := h.storage.Delete(id)
+	if !ok {
+		response.WriteJSON(w, http.StatusNotFound, map[string]string{
+			"error": "task not found",
+		})
+		return
+	}
+
+	response.WriteJSON(w, http.StatusNoContent, nil)
+}
+```
+Давайте посмотрим что тут происходит.
+В начале мы создаем структуру `TasksHandler` и функцию создания значения `NewTasksHandler` которая будет принимать пареметр `storage` типа `*tasks.MemoryStorage` и возвращать `*TasksHandler`.
+
+То есть мы перед этим создали файл `memory.go` в котором описали механику работы с хранилищем. 
+А теперь обьявляем структуру с методами, реализующую набор конецных обработчиков для запросов к сущностя `Tasks`, это `TasksHandler` и функция создания значения типа `TasksHandler` которая требует как зависимость указатель на `tasks.MemoryStorage`. 
+
+Набор методов у нас базовый:
+
+- Create
+- List
+- Get
+- Delete
+
+Собственно это: создать, отобразить весь список, получить кокретный по `id` и удалить конкретный `Task`.
+
+Далее я внес изменения в файл `internal/app/app.go`:
+```go
+package app
+
+import (
+	"fmt"
+	"net/http"
+
+	"github.com/vysmv/task-manager-api/internal/config"
+	"github.com/vysmv/task-manager-api/internal/http/handlers"
+	"github.com/vysmv/task-manager-api/internal/tasks"
+)
+
+func Run() error {
+	cfg := config.MustLoad()
+
+	storage := tasks.NewMemoryStorage()
+	tasksHandler := handlers.NewTasksHandler(storage)
+
+	mux := http.NewServeMux()
+
+	// health
+	mux.HandleFunc("GET /health", handlers.Health)
+
+	// tasks
+	mux.HandleFunc("POST /tasks", tasksHandler.Create)
+	mux.HandleFunc("GET /tasks", tasksHandler.List)
+	mux.HandleFunc("GET /tasks/", tasksHandler.Get)
+	mux.HandleFunc("DELETE /tasks/", tasksHandler.Delete)
+
+	server := &http.Server{
+		Addr:    ":" + cfg.HTTPPort,
+		Handler: mux,
+	}
+
+	fmt.Printf("server started on :%s\n", cfg.HTTPPort)
+
+	return server.ListenAndServe()
+}
+```
+
+Тут можно увидеть что появилось создание `storage` и `tasksHandler` которой как мы только что видели ожидает именно `*tasks.MemoryStorage`.
+
+Тут стоит обратть внимание, что `storage` будет общей переменной для всез запросов к серверу и будет хранить свое состояние пока сервер не будет перезагружен.
+
+И добавляем четыре новых маршрута под комментарием `// tasks`.
+В качестве обработчика передаем методы `tasksHandler`. 
+Которые как и обработчики в ранних примерах принимают на вход `w http.ResponseWriter, r *http.Request`.
+То есть наши обработчики также могут быть значениями типа `http.HandlerFunc`.
+Которая удовлетворяет интерфейс `http.Handler`.
+
+Теперь осталось сделать rebuild и запустить приложение для теста:
+```bash
+go run ./cmd/task-manager-api/
+```
+
+И протестировать его работу.
+
+Создать задачу:
+```bash
+curl -X POST http://localhost:8080/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"title":"learn go"}'
+```
+
+Получить список:
+```bash
+curl http://localhost:8080/tasks
+```
+
+Получить по id:
+```bash
+curl http://localhost:8080/tasks/1
+```
+
+Удалить:
+```bash
+curl -X DELETE http://localhost:8080/tasks/1
+```
+
+С этой итерацией все и идем дальше.
+
+#### Итерация 3
+
+Наша задача на этом шаге, - разобраться с валидацией входных данных.
+Сейчас у нас в файле `internal/http/handlers/tasks.go` есть метод `Create` и в нем есть валидация запрса:
+```go
+if strings.TrimSpace(req.Title) == "" {
+	response.WriteJSON(w, http.StatusBadRequest, map[string]string{
+		"error": "title is required",
+	})
+	return
+}
+```
+Вот этим мы и займемся.
+
+Давайте переключимся на тег step3 и также проанализируем как изменился наш проект:
+```bash
+git checkout step3
+```
+
+Во первых у нас появился новый файл `internal/http/handlers/requests.go`:
+```go
+package handlers
+
+import "strings"
+
+type CreateTaskRequest struct {
+	Title string `json:"title"`
+}
+
+func (r *CreateTaskRequest) Validate() map[string]string {
+	errors := make(map[string]string)
+
+	if strings.TrimSpace(r.Title) == "" {
+		errors["title"] = "required"
+	}
+
+	return errors
+}
+```
+Тут мы реализуем структуру `CreateTaskRequest`. 
+А также метод валидации. Он вернет map ошибок. 
+В случае успешной валидации map будет пустой.  
+
+Далее создаем файл `internal/http/response/error.go`.
+```go
+package response
+
+import "net/http"
+
+type ErrorResponse struct {
+	Error  string            `json:"error,omitempty"`
+	Fields map[string]string `json:"fields,omitempty"`
+}
+
+func WriteError(w http.ResponseWriter, status int, err string) {
+	WriteJSON(w, status, ErrorResponse{
+		Error: err,
+	})
+}
+
+func WriteValidationError(w http.ResponseWriter, fields map[string]string) {
+	WriteJSON(w, http.StatusBadRequest, ErrorResponse{
+		Error:  "validation error",
+		Fields: fields,
+	})
+}
+```
+Этот код просто позволит получить единый формат вывода ошибок.
+
+А далее меняем метод `Create` в файле `internal/http/handlers/tasks.go`
+```go
+func (h *TasksHandler) Create(w http.ResponseWriter, r *http.Request) {
+	var req CreateTaskRequest
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.WriteError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+
+	if errs := req.Validate(); len(errs) > 0 {
+		response.WriteValidationError(w, errs)
+		return
+	}
+
+	task := h.storage.Create(req.Title)
+
+	response.WriteJSON(w, http.StatusCreated, task)
+}
+```
+
+Тут мы считываем `Body` и записываем его в переменную  `req`.
+Далее просто вызываем метод `Validate`, то есть как результат мы вынесли реализацию валидации из обработчика. 
+И если все прошло успешно, то создаем `Task`.
+
+Это все измения этого шага. 
+Осталось только проверить, что все работает.
+Выполним rebuild:
+```bash
+go run ./cmd/task-manager-api/
+```
+
+И протестировать его работу.
+
+Создать задачу:
+```bash
+curl -X POST http://localhost:8080/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"title":"learn go"}'
+```
+
+Получить список:
+```bash
+curl http://localhost:8080/tasks
+```
+
+Получить по id:
+```bash
+curl http://localhost:8080/tasks/1
+```
+
+Удалить:
+```bash
+curl -X DELETE http://localhost:8080/tasks/1
+```
+
+#### Итерация 4
+
+В этой части мы реализуем подключение базы данных и Repository:
+- вводим repository слой
+- подключаем реальную БД
+- убираем зависимость handler → memory
+
+Я решил использовать `PostgreSQL`.
+Такой выбор обусловлен тем, что это полностью удовлетворяющая задачу СУБД и она крайне актуальна.
+
+Первым делом поднимем контейнер с базой:
+```bash
+docker run -d \
+  --name task-manager-postgres \
+  -e POSTGRES_DB=task_manager \
+  -e POSTGRES_USER=task_manager \
+  -e POSTGRES_PASSWORD=task_manager \
+  -p 5432:5432 \
+  postgres:17
+```
+
+> Дополнительно
+> 
+> --name task-manager-postgres
+> имя контейнера
+>
+> -e POSTGRES_DB=task_manager
+> имя базы данных, которая будет создана автоматически
+>
+> -e POSTGRES_USER=task_manager
+> пользователь БД
+>
+> -e POSTGRES_PASSWORD=task_manager
+> пароль
+>
+> -p 5432:5432
+> порт контейнера пробрасывается на localhost
+>
+> postgres:17
+> образ PostgreSQL
+
+И создадим таблицу в нашей базе.
+Для этого зайдем в контейнер:
+```bash
+docker exec -it task-manager-postgres psql -U task_manager -d task_manager
+```
+
+Создадим таблицу:
+```sql
+CREATE TABLE tasks (
+    id BIGSERIAL PRIMARY KEY,
+    title TEXT NOT NULL,
+    done BOOLEAN NOT NULL DEFAULT false
+);
+```
+
+И выходим:
+```
+\q
+```
+
+Далее я переключусь на тег step4.
+И как обычно проанализируем изменения.
+
+Первым делом у нас появились две новых директории:
+[тех. действие. Удалить.]
+```bash
+mkdir -p internal/storage/postgres
+mkdir -p internal/tasks/repository
+``` 
+
+**internal/storage/postgres** - тут будет код, связанный с самим PostgreSQL:
+
+- создание подключения
+- специфичная для Postgres инфраструктура
+
+**internal/tasks/repository** - тут будет repository, относящийся к домену tasks.
+
+То есть логика такая:
+
+tasks — прикладной контекст
+postgres — конкретная технология хранения
+
+Далее у нас обновляется конфиг `internal/config/config.go`:
+```go
+package config
+
+type Config struct {
+	HTTPPort string
+	DBHost   string
+	DBPort   string
+	DBUser   string
+	DBPass   string
+	DBName   string
+	DBSSLMode string
+}
+
+func MustLoad() Config {
+	return Config{
+		HTTPPort:  "8080",
+		DBHost:    "localhost",
+		DBPort:    "5432",
+		DBUser:    "task_manager",
+		DBPass:    "task_manager",
+		DBName:    "task_manager",
+		DBSSLMode: "disable",
+	}
+}
+```
+По сути мы тут просто добавили параметры БД.
+
+Далее я создал файл `internal/storage/postgres/postgres.go`:
+```go
+package postgres
+
+import (
+	"database/sql"
+	"fmt"
+
+	_ "github.com/lib/pq"
+
+	"github.com/vysmv/task-manager-api/internal/config"
+)
+
+func New(cfg config.Config) (*sql.DB, error) {
+	dsn := fmt.Sprintf(
+		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
+		cfg.DBHost,
+		cfg.DBPort,
+		cfg.DBUser,
+		cfg.DBPass,
+		cfg.DBName,
+		cfg.DBSSLMode,
+	)
+
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	return db, nil
+}
+``` 
+Как я сказал ранее, пакет postgres — конкретная технология хранения.
+В нем есть метод `New`, который принимет конфиг и инициирует соединение через `sql.Open`.
+
+Важно заметить, что в `import` есть строка `_ "github.com/lib/pq"`.
+Это пакет драйвера и я подключил его выполнив команду:
+```bash
+go get github.com/lib/pq
+```
+Мы подключаем этот пакет но не используем его явно.
+Этот пакет просто дает нужный побочный эффект.
+
+Ну и также тут есть пинг соединения.
+
+А далее я добавил файл `internal/tasks/repository/postgres.go`:
+```go
+package repository
+
+import (
+	"database/sql"
+	"errors"
+
+	"github.com/vysmv/task-manager-api/internal/tasks"
+)
+
+var ErrTaskNotFound = errors.New("task not found")
+
+type TasksRepository struct {
+	db *sql.DB
+}
+
+func NewTasksRepository(db *sql.DB) *TasksRepository {
+	return &TasksRepository{db: db}
+}
+
+func (r *TasksRepository) Create(title string) (tasks.Task, error) {
+	var task tasks.Task
+
+	err := r.db.QueryRow(
+		`
+		INSERT INTO tasks (title, done)
+		VALUES ($1, false)
+		RETURNING id, title, done
+		`,
+		title,
+	).Scan(&task.ID, &task.Title, &task.Done)
+	if err != nil {
+		return tasks.Task{}, err
+	}
+
+	return task, nil
+}
+
+func (r *TasksRepository) List() ([]tasks.Task, error) {
+	rows, err := r.db.Query(`
+		SELECT id, title, done
+		FROM tasks
+		ORDER BY id ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make([]tasks.Task, 0)
+
+	for rows.Next() {
+		var task tasks.Task
+
+		if err := rows.Scan(&task.ID, &task.Title, &task.Done); err != nil {
+			return nil, err
+		}
+
+		result = append(result, task)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+func (r *TasksRepository) Get(id int64) (tasks.Task, error) {
+	var task tasks.Task
+
+	err := r.db.QueryRow(
+		`
+		SELECT id, title, done
+		FROM tasks
+		WHERE id = $1
+		`,
+		id,
+	).Scan(&task.ID, &task.Title, &task.Done)
+
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return tasks.Task{}, ErrTaskNotFound
+		}
+
+		return tasks.Task{}, err
+	}
+
+	return task, nil
+}
+
+func (r *TasksRepository) Delete(id int64) error {
+	result, err := r.db.Exec(
+		`
+		DELETE FROM tasks
+		WHERE id = $1
+		`,
+		id,
+	)
+	if err != nil {
+		return err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+
+	if rowsAffected == 0 {
+		return ErrTaskNotFound
+	}
+
+	return nil
+}
+```
+По смыслу мы сделали так, чтобы у контекста `tasks` появился пакет `repository`, который предоставляет структуру `TasksRepository` и функцию `NewTasksRepository` для создания значений типа указатель на `TasksRepository`.
+Тут важно обратить внимание, что структура имеет поле `db` типа `*sql.DB`.
+То есть она будет иметь в себе механику соединения с БД (что-то типа API над пулом соединений с базой).
+Которую будет возвращать функция `New` из `internal/storage/postgres/postgres.go`.
+
+А также тут есть набор методов для получения данных.
+Как результат, этим мы заменили `internal/tasks/memory.go`, который был на прошлой итерации.
+В общем это именно новая механика доступа к данным домена tasks.
+
+Далее посмотрим на обновленный файл `internal/http/handlers/tasks.go`:
+```go
+package handlers
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/vysmv/task-manager-api/internal/http/response"
+	"github.com/vysmv/task-manager-api/internal/tasks/repository"
+)
+
+type TasksHandler struct {
+	repo *repository.TasksRepository
+}
+
+func NewTasksHandler(repo *repository.TasksRepository) *TasksHandler {
+	return &TasksHandler{repo: repo}
+}
+
+func (h *TasksHandler) Create(w http.ResponseWriter, r *http.Request) {
+	var req CreateTaskRequest
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.WriteError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+
+	if errs := req.Validate(); len(errs) > 0 {
+		response.WriteValidationError(w, errs)
+		return
+	}
+
+	task, err := h.repo.Create(req.Title)
+	if err != nil {
+		response.WriteError(w, http.StatusInternalServerError, "failed to create task")
+		return
+	}
+
+	response.WriteJSON(w, http.StatusCreated, task)
+}
+
+func (h *TasksHandler) List(w http.ResponseWriter, r *http.Request) {
+	tasks, err := h.repo.List()
+	if err != nil {
+		response.WriteError(w, http.StatusInternalServerError, "failed to fetch tasks")
+		return
+	}
+
+	response.WriteJSON(w, http.StatusOK, tasks)
+}
+
+func (h *TasksHandler) Get(w http.ResponseWriter, r *http.Request) {
+	idStr := strings.TrimPrefix(r.URL.Path, "/tasks/")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		response.WriteError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+
+	task, err := h.repo.Get(id)
+	if err != nil {
+		if errors.Is(err, repository.ErrTaskNotFound) {
+			response.WriteError(w, http.StatusNotFound, "task not found")
+			return
+		}
+
+		response.WriteError(w, http.StatusInternalServerError, "failed to fetch task")
+		return
+	}
+
+	response.WriteJSON(w, http.StatusOK, task)
+}
+
+func (h *TasksHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	idStr := strings.TrimPrefix(r.URL.Path, "/tasks/")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		response.WriteError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+
+	if err := h.repo.Delete(id); err != nil {
+		if errors.Is(err, repository.ErrTaskNotFound) {
+			response.WriteError(w, http.StatusNotFound, "task not found")
+			return
+		}
+
+		response.WriteError(w, http.StatusInternalServerError, "failed to delete task")
+		return
+	}
+
+	response.WriteJSON(w, http.StatusNoContent, nil)
+}
+```
+В этом коде раньше `TasksHandler` зависел от `*tasks.MemoryStorage`.
+Теперь он должен зависеть от `repository`.
+Именно это я и изменил.
+
+И последнее что изменилось в рамках этой итерации, это файл `internal/app/app.go`:
+```go
+package app
+
+import (
+	"fmt"
+	"net/http"
+
+	"github.com/vysmv/task-manager-api/internal/config"
+	"github.com/vysmv/task-manager-api/internal/http/handlers"
+	"github.com/vysmv/task-manager-api/internal/storage/postgres"
+	"github.com/vysmv/task-manager-api/internal/tasks/repository"
+)
+
+func Run() error {
+	cfg := config.MustLoad()
+
+	db, err := postgres.New(cfg)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	tasksRepo := repository.NewTasksRepository(db)
+	tasksHandler := handlers.NewTasksHandler(tasksRepo)
+
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("GET /health", handlers.Health)
+
+	mux.HandleFunc("POST /tasks", tasksHandler.Create)
+	mux.HandleFunc("GET /tasks", tasksHandler.List)
+	mux.HandleFunc("GET /tasks/", tasksHandler.Get)
+	mux.HandleFunc("DELETE /tasks/", tasksHandler.Delete)
+
+	server := &http.Server{
+		Addr:    ":" + cfg.HTTPPort,
+		Handler: mux,
+	}
+
+	fmt.Printf("server started on :%s\n", cfg.HTTPPort)
+
+	return server.ListenAndServe()
+}
+```
+Тут тоже изменился способ работы с хранилищем. 
+Мы вызываем функцию `postgres.New(cfg)` и порождаем механику работы с базой.
+И далее создаем репозиторий для доменой сушности `tasks` через `repository.NewTasksRepository(db)`
+И в итоге создаем `tasksHandler` предавая ему репозиторий.
+Все остальное осталось как было. 
+
+С этим все.
+Давайте проверим, что все работает.
+
+Пересоберем и запустим приложение:
+```
+go run ./cmd/task-manager-api
+```
+Создадим задачу
+```
+curl -i \
+  -X POST http://localhost:8080/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"title":"learn go!"}'
+```
+
+Получим список задач:
+```
+curl -i http://localhost:8080/tasks
+```
 
 
 
@@ -2687,6 +3582,12 @@ func MustLoad() Config {
 
 
 
+
+
+
+
+Текущая итерация "Ты прав. В прошлой версии итерация 4 была сделана плохо."
+Нужно прокомментирвать измения и запушить step4
 
 
 
