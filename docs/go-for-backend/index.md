@@ -3572,22 +3572,594 @@ curl -i \
 curl -i http://localhost:8080/tasks
 ```
 
+#### Итерация 5
 
+На этой итераци, я закрою тему CRUD. 
+У нас уже есть функционал чтения (Get, List) и создания (Create) и удаления (Delete).
+Осталось только добавить маршрут и логику работы для `Update`.
 
+Давайте посмотрим на новый код.
+Перейдем на тег step5 и как и раньше проведем инспекцию.
 
+Первое изменение у нас произощло в файле `internal/http/handlers/requests.go`:
+```go
+package handlers
 
+import "strings"
 
+type CreateTaskRequest struct {
+	Title string `json:"title"`
+}
 
+type UpdateTaskRequest struct {
+	Title *string `json:"title"`
+	Done  *bool   `json:"done"`
+}
 
+func (r *CreateTaskRequest) Validate() map[string]string {
+	errors := make(map[string]string)
 
+	if strings.TrimSpace(r.Title) == "" {
+		errors["title"] = "required"
+	}
 
+	return errors
+}
 
+func (r *UpdateTaskRequest) Validate() map[string]string {
+	errors := make(map[string]string)
 
+	if r.Title == nil && r.Done == nil {
+		errors["body"] = "at least one field must be provided"
+		return errors
+	}
 
+	if r.Title != nil && strings.TrimSpace(*r.Title) == "" {
+		errors["title"] = "cannot be empty"
+	}
 
+	return errors
+}
+```
+Тут мы добавили структуру `UpdateTaskRequest` и метод ее валидации `Validate`.
 
-Текущая итерация "Ты прав. В прошлой версии итерация 4 была сделана плохо."
-Нужно прокомментирвать измения и запушить step4
+Следующим шагом изменил файл `internal/tasks/repository/postgres.go`:
+```go
+package repository
+
+import (
+	"database/sql"
+	"errors"
+	"strconv"
+
+	"github.com/vysmv/task-manager-api/internal/tasks"
+)
+
+var ErrTaskNotFound = errors.New("task not found")
+
+type TasksRepository struct {
+	db *sql.DB
+}
+
+func NewTasksRepository(db *sql.DB) *TasksRepository {
+	return &TasksRepository{db: db}
+}
+
+func (r *TasksRepository) Create(title string) (tasks.Task, error) {
+	var task tasks.Task
+
+	err := r.db.QueryRow(
+		`
+		INSERT INTO tasks (title, done)
+		VALUES ($1, false)
+		RETURNING id, title, done
+		`,
+		title,
+	).Scan(&task.ID, &task.Title, &task.Done)
+	if err != nil {
+		return tasks.Task{}, err
+	}
+
+	return task, nil
+}
+
+func (r *TasksRepository) List() ([]tasks.Task, error) {
+	rows, err := r.db.Query(`
+		SELECT id, title, done
+		FROM tasks
+		ORDER BY id ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make([]tasks.Task, 0)
+
+	for rows.Next() {
+		var task tasks.Task
+
+		if err := rows.Scan(&task.ID, &task.Title, &task.Done); err != nil {
+			return nil, err
+		}
+
+		result = append(result, task)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+func (r *TasksRepository) Get(id int64) (tasks.Task, error) {
+	var task tasks.Task
+
+	err := r.db.QueryRow(
+		`
+		SELECT id, title, done
+		FROM tasks
+		WHERE id = $1
+		`,
+		id,
+	).Scan(&task.ID, &task.Title, &task.Done)
+
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return tasks.Task{}, ErrTaskNotFound
+		}
+
+		return tasks.Task{}, err
+	}
+
+	return task, nil
+}
+
+func (r *TasksRepository) Update(id int64, title *string, done *bool) (tasks.Task, error) {
+	query := "UPDATE tasks SET "
+	args := make([]any, 0)
+	argID := 1
+
+	if title != nil {
+		query += "title = $" + strconv.Itoa(argID)
+		args = append(args, *title)
+		argID++
+	}
+
+	if done != nil {
+		if len(args) > 0 {
+			query += ", "
+		}
+		query += "done = $" + strconv.Itoa(argID)
+		args = append(args, *done)
+		argID++
+	}
+
+	query += " WHERE id = $" + strconv.Itoa(argID)
+	args = append(args, id)
+
+	query += " RETURNING id, title, done"
+
+	var task tasks.Task
+
+	err := r.db.QueryRow(query, args...).Scan(
+		&task.ID,
+		&task.Title,
+		&task.Done,
+	)
+
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return tasks.Task{}, ErrTaskNotFound
+		}
+		return tasks.Task{}, err
+	}
+
+	return task, nil
+}
+
+func (r *TasksRepository) Delete(id int64) error {
+	result, err := r.db.Exec(
+		`
+		DELETE FROM tasks
+		WHERE id = $1
+		`,
+		id,
+	)
+	if err != nil {
+		return err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+
+	if rowsAffected == 0 {
+		return ErrTaskNotFound
+	}
+
+	return nil
+}
+```
+Тут добавился метод `Update` и `import "strconv"`.
+
+Следующий шаг это обновление файла `internal/http/handlers/tasks.go`:
+```go
+package handlers
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/vysmv/task-manager-api/internal/http/response"
+	"github.com/vysmv/task-manager-api/internal/tasks/repository"
+)
+
+type TasksHandler struct {
+	repo *repository.TasksRepository
+}
+
+func NewTasksHandler(repo *repository.TasksRepository) *TasksHandler {
+	return &TasksHandler{repo: repo}
+}
+
+func (h *TasksHandler) Create(w http.ResponseWriter, r *http.Request) {
+	var req CreateTaskRequest
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.WriteError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+
+	if errs := req.Validate(); len(errs) > 0 {
+		response.WriteValidationError(w, errs)
+		return
+	}
+
+	task, err := h.repo.Create(req.Title)
+	if err != nil {
+		response.WriteError(w, http.StatusInternalServerError, "failed to create task")
+		return
+	}
+
+	response.WriteJSON(w, http.StatusCreated, task)
+}
+
+func (h *TasksHandler) List(w http.ResponseWriter, r *http.Request) {
+	tasks, err := h.repo.List()
+	if err != nil {
+		response.WriteError(w, http.StatusInternalServerError, "failed to fetch tasks")
+		return
+	}
+
+	response.WriteJSON(w, http.StatusOK, tasks)
+}
+
+func (h *TasksHandler) Get(w http.ResponseWriter, r *http.Request) {
+	idStr := strings.TrimPrefix(r.URL.Path, "/tasks/")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		response.WriteError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+
+	task, err := h.repo.Get(id)
+	if err != nil {
+		if errors.Is(err, repository.ErrTaskNotFound) {
+			response.WriteError(w, http.StatusNotFound, "task not found")
+			return
+		}
+
+		response.WriteError(w, http.StatusInternalServerError, "failed to fetch task")
+		return
+	}
+
+	response.WriteJSON(w, http.StatusOK, task)
+}
+
+func (h *TasksHandler) Update(w http.ResponseWriter, r *http.Request) {
+	idStr := strings.TrimPrefix(r.URL.Path, "/tasks/")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		response.WriteError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+
+	var req UpdateTaskRequest
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.WriteError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+
+	if errs := req.Validate(); len(errs) > 0 {
+		response.WriteValidationError(w, errs)
+		return
+	}
+
+	task, err := h.repo.Update(id, req.Title, req.Done)
+	if err != nil {
+		if errors.Is(err, repository.ErrTaskNotFound) {
+			response.WriteError(w, http.StatusNotFound, "task not found")
+			return
+		}
+
+		response.WriteError(w, http.StatusInternalServerError, "failed to update task")
+		return
+	}
+
+	response.WriteJSON(w, http.StatusOK, task)
+}
+
+func (h *TasksHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	idStr := strings.TrimPrefix(r.URL.Path, "/tasks/")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		response.WriteError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+
+	if err := h.repo.Delete(id); err != nil {
+		if errors.Is(err, repository.ErrTaskNotFound) {
+			response.WriteError(w, http.StatusNotFound, "task not found")
+			return
+		}
+
+		response.WriteError(w, http.StatusInternalServerError, "failed to delete task")
+		return
+	}
+
+	response.WriteJSON(w, http.StatusNoContent, nil)
+}
+```
+В этом случае я также добавляю обработчик для `Update`.
+
+И в завершении регистрирую новый эндпоинт в `internal/app/app.go`:
+```go
+package app
+
+import (
+	"fmt"
+	"net/http"
+
+	"github.com/vysmv/task-manager-api/internal/config"
+	"github.com/vysmv/task-manager-api/internal/http/handlers"
+	"github.com/vysmv/task-manager-api/internal/storage/postgres"
+	"github.com/vysmv/task-manager-api/internal/tasks/repository"
+)
+
+func Run() error {
+	cfg := config.MustLoad()
+
+	db, err := postgres.New(cfg)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	tasksRepo := repository.NewTasksRepository(db)
+	tasksHandler := handlers.NewTasksHandler(tasksRepo)
+
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("GET /health", handlers.Health)
+
+	mux.HandleFunc("POST /tasks", tasksHandler.Create)
+	mux.HandleFunc("GET /tasks", tasksHandler.List)
+	mux.HandleFunc("GET /tasks/", tasksHandler.Get)
+	mux.HandleFunc("PATCH /tasks/", tasksHandler.Update) //New
+	mux.HandleFunc("DELETE /tasks/", tasksHandler.Delete)
+
+	server := &http.Server{
+		Addr:    ":" + cfg.HTTPPort,
+		Handler: mux,
+	}
+
+	fmt.Printf("server started on :%s\n", cfg.HTTPPort)
+
+	return server.ListenAndServe()
+}
+```
+
+Как результат у нас есть полный набор CRUD операций. 
+
+Это все, давайте проверим корректность работы. 
+Пересоберем и запустим приложение:
+```
+go run ./cmd/task-manager-api
+```
+
+Создадим задачу:
+```bash
+curl -i \
+  -X POST http://localhost:8080/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"title":"learn go!"}'
+```
+
+Обновим задачу:
+```bash
+curl -X PATCH http://localhost:8080/tasks/1 \
+  -H "Content-Type: application/json" \
+  -d '{"title":"new title"}'
+```
+
+Проверяем изменения:
+```bash
+curl http://localhost:8080/tasks
+```
+
+Хорошо, перходим к шестой итерации. 
+
+#### Итерация 6
+
+На этом шаге мы добавим инфраструктурный слой между сервером и handler’ами.
+Это Middleware.
+Он позволяет выполнять общую инфраструктурную логику (логирование, аутентификацию, метрики) без дублирования кода в каждом обработчике.
+В общем цепочка будет иметь такой вид:
+```go
+Request → Middleware → Handler → Response
+```
+
+Давайте перейдем на тег `step6` и посмотрим что изменилось в проекте.
+
+Первое, я создал директорию `internal/http/middleware` и в ней файл `logging.go`:
+```go
+package middleware
+
+import (
+	"log"
+	"net/http"
+	"time"
+)
+
+type responseWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (rw *responseWriter) WriteHeader(status int) {
+	rw.status = status
+	rw.ResponseWriter.WriteHeader(status)
+}
+
+func Logging(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+
+		rw := &responseWriter{
+			ResponseWriter: w,
+			status:         http.StatusOK,
+		}
+
+		next.ServeHTTP(rw, r)
+
+		duration := time.Since(start)
+
+		log.Printf(
+			"%s %s %d %s",
+			r.Method,
+			r.URL.Path,
+			rw.status,
+			duration,
+		)
+	})
+}
+```
+Middleware это просто функция которая принимает `http.Handler` и возвращает `http.Handler`.
+В нашем случае это `Logging`.
+Если посмотреть на код функции, то станет понятно, что она возвращает анонимную функцию приведенную к типу `http.HandlerFunc`.
+А для типа `HandlerFunc`, в пакете net/http есть метод:
+```go
+func (f HandlerFunc) ServeHTTP(w ResponseWriter, r *Request) {
+    f(w, r)
+}
+```
+Следовательно сервер сможет вызвать наш middleware, а код middleware сможет вызвать цепочку дальше. Вызывая полученый как аргумент следующий хендлер. 
+В нашем случае мы вызываем `next.ServeHTTP(rw, r)`.
+
+И также тут происходит процесс логирования.
+Мы фиксируем время на страте, потом отрабатывает конечный обработчик и мы получаем длительность обработки в переменную `duration`, а потом мы выводим логи.
+Там будет что-то вида:
+```
+GET /tasks 200 2ms
+```
+
+Самое интересное тут это код ответа от конечного обработчика. Ведь он вроде как недоступен.
+После выполнения `next.ServeHTTP(w, r)` он нигде не зафиксирован.
+
+Именно с этой целью я использую структуру `responseWriter` и ее метод `WriteHeader`.
+
+Когда мы вызываем `next.ServeHTTP(rw, r)` то передаем нашу структуру `responseWriter` у которой есть встроенное поле (embedded) `http.ResponseWriter`. А значит через нашу структуру будут доступны все необходимые методы.
+Далее в конечном хендлере будет вызвана функция `WriteJSON` из файла `internal/http/response/json.go`, а в ней будет вызван метод `w.WriteHeader(status)`. Так вот на этом этапе `w` это наш `rw`. И у него есть свой метод `WriteHeader`. То есть он и будет вызван.
+А уже в нем запишем статус в нашу структуру и вызовем реальный `rw.ResponseWriter.WriteHeader(status)`.
+В общем мы его словно перехватили и созранили статус.
+
+И чтобы все это заработало я обновил файл `internal/app/app.go`:
+```go
+package app
+
+import (
+	"fmt"
+	"net/http"
+
+	"github.com/vysmv/task-manager-api/internal/config"
+	"github.com/vysmv/task-manager-api/internal/http/handlers"
+	"github.com/vysmv/task-manager-api/internal/http/middleware"
+	"github.com/vysmv/task-manager-api/internal/storage/postgres"
+	"github.com/vysmv/task-manager-api/internal/tasks/repository"
+)
+
+func Run() error {
+	cfg := config.MustLoad()
+
+	db, err := postgres.New(cfg)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	tasksRepo := repository.NewTasksRepository(db)
+	tasksHandler := handlers.NewTasksHandler(tasksRepo)
+
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("GET /health", handlers.Health)
+
+	mux.HandleFunc("POST /tasks", tasksHandler.Create)
+	mux.HandleFunc("GET /tasks", tasksHandler.List)
+	mux.HandleFunc("GET /tasks/", tasksHandler.Get)
+	mux.HandleFunc("PATCH /tasks/", tasksHandler.Update) //New
+	mux.HandleFunc("DELETE /tasks/", tasksHandler.Delete)
+
+	server := &http.Server{
+		Addr:    ":" + cfg.HTTPPort,
+		Handler: middleware.Logging(mux),
+	}
+
+	fmt.Printf("server started on :%s\n", cfg.HTTPPort)
+
+	return server.ListenAndServe()
+}
+```
+То есть добавил импорт "github.com/vysmv/task-manager-api/internal/http/middleware".
+И обновил этот блок:
+```go
+server := &http.Server{
+	Addr:    ":" + cfg.HTTPPort,
+	Handler: middleware.Logging(mux),
+}
+```
+Теперь в нем как хендлер указывается `middleware.Logging` а ему в качестве аргумента передается наш маршрутизатор как следующий хендлер.  
+
+С этим все. Осталось проверить работоспособность.
+
+Выполним пересборку проекта:
+```bash
+go run ./cmd/task-manager-api
+```
+
+И выполним запрос на создание задачи:
+```bash
+curl -i \
+  -X POST http://localhost:8080/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"title":"learn go!!!"}'
+```
+
+А после на получение списка задач:
+```bash
+curl http://localhost:8080/tasks
+```
+
+В обоих случаях, мы увидим в терминале вывод логов.
+То есть работает как мы и ожидали. 
+Идем дальше. 
 
 
 
