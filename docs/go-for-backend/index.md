@@ -4162,9 +4162,80 @@ curl http://localhost:8080/tasks
 Идем дальше. 
 
 
+#### Итерация 7
 
+Эта итерация будет самая маленькая. Но я все равно вынес ее как отдельный шаг, чтобы проговрить ее более явно. 
+В прошлой итерации мы посмотрели на middleware но применили его ко всем маршрутам, а как сделать так, чтобы он отрабатывал только на конкретном маршруте? 
+Тут все просто.
+Мы добавим middleware для конкретного маршрута "GET /tasks" и вернем в качестве Handler mux:
+```go
+package app
 
+import (
+	"fmt"
+	"net/http"
 
+	"github.com/vysmv/task-manager-api/internal/config"
+	"github.com/vysmv/task-manager-api/internal/http/handlers"
+	"github.com/vysmv/task-manager-api/internal/http/middleware"
+	"github.com/vysmv/task-manager-api/internal/storage/postgres"
+	"github.com/vysmv/task-manager-api/internal/tasks/repository"
+)
+
+func Run() error {
+	cfg := config.MustLoad()
+
+	db, err := postgres.New(cfg)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	tasksRepo := repository.NewTasksRepository(db)
+	tasksHandler := handlers.NewTasksHandler(tasksRepo)
+
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("GET /health", handlers.Health)
+
+	mux.HandleFunc("POST /tasks", tasksHandler.Create)
+	mux.Handle(
+		"GET /tasks",
+		middleware.Logging(http.HandlerFunc(tasksHandler.List)),
+	) // NEW!
+	mux.HandleFunc("GET /tasks/", tasksHandler.Get)
+	mux.HandleFunc("PATCH /tasks/", tasksHandler.Update)
+	mux.HandleFunc("DELETE /tasks/", tasksHandler.Delete)
+
+	server := &http.Server{
+		Addr:    ":" + cfg.HTTPPort,
+		Handler: mux, // Changed
+	}
+
+	fmt.Printf("server started on :%s\n", cfg.HTTPPort)
+
+	return server.ListenAndServe()
+}
+```
+
+И теперь если мы выполним запрос на получение списка:
+```bash
+curl http://localhost:8080/tasks
+```
+то увидим логи.
+
+А если выполним запрос на создание задачи:
+```bash
+curl -i \
+  -X POST http://localhost:8080/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"title":"learn Linux"}'
+```
+То логирование не будет отрабатывать. 
+
+Хорошо, идем дальше. 
+
+#### Итерация 8
 
 
 
