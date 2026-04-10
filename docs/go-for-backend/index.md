@@ -4300,18 +4300,12 @@ curl → HTTP → handler → DB → ответ
 func TestXxx(t *testing.T)
 ```
 Этот тип позволяет писать и Unit, и Integration, и E2E. 
-То есть инструмент один, а какую часть проекта им тестировать решать нам.
+То есть вид один, а какую часть проекта им тестировать решать нам.
 Например:
 ```go
 func TestValidate(t *testing.T) // Unit тест
 func TestCreateTask_WithDB(t *testing.T) // Integration тест
 func TestAPI_EndToEnd(t *testing.T) // E2E тест
-```
-
-- **Benchmark**
-Это отдельный вид тестов для измерения скорости.
-```go
-func BenchmarkXxx(b *testing.B)
 ```
 
 - **Fuzz**
@@ -4364,7 +4358,7 @@ func TestFirstChar(t *testing.T) {
 Далее у нас есть обычный тест.
 И в нем мы получаем первый символ от строки "abc" и проводим сравнение.
 Если `result` не равен символу `a`, то тест провален. 
-Но этот тест не покажет, что если в `FirstChar` передать например пустую строку, то будет ошибка. 
+Но этот тест не покажет, то что если в `FirstChar` передать например пустую строку, то будет ошибка. 
 Для решения таких задач и существует Fuzz тестирование.
 
 internal/stringutils/first_char_fuzz_test.go
@@ -4382,7 +4376,7 @@ func FuzzFirstChar(f *testing.F) {
 	})
 }
 ```
-Тут мы вызываем `Add` дважды и передаем стартовые примеры входных данных.
+Тут мы вызываем `Add` дважды и передаем стартовые примеры входных данных (seed).
 После этого Fuzz `abc` и `hello` и начинает их мутировать и при этом запускает через 
 `f.Fuzz` анонимную функцию в которой вызывается тестируемый `FirstChar`. То есть Go множество раз запускает нашу функцию с разными строками пытаясь найти строку на которой все сломается. И если ошибка будет найтена то отрапортует. 
 
@@ -4402,7 +4396,6 @@ go test ./...
 ```bash
 go test -fuzz=FuzzFirstChar ./internal/stringutils
 ```
-
 
 - **Example**
 ```go
@@ -4430,3 +4423,154 @@ func ExampleSplit() {
 - что получишь
 
 Но и также есть возможность осуществить запуск теста чтобы еще и убедиться что поведение по прежнему актуально.
+
+- **Benchmark**
+Это отдельный вид тестов для измерения скорости выполнения.
+Давайте посмотрим на него тоже на примере отдельного проекта.
+
+`cmd/app/main.go`:
+```go
+package main
+
+import (
+	"fmt"
+
+	"benchmark-app/internal/stringutils"
+)
+
+func main() {
+	words := []string{"go", "is", "fast"}
+
+	fmt.Println(stringutils.ConcatSlow(words))
+	fmt.Println(stringutils.ConcatFast(words))
+}
+```
+Тут мы просто распечатываем результаты работы `ConcatSlow` и `ConcatFast`.
+По сути нам этот файл нужен только для полноты картины.
+
+`internal/stringutils/concat.go`:
+```go
+package stringutils
+
+import "strings"
+
+// ❌ медленный способ (конкатенация через +)
+func ConcatSlow(words []string) string {
+	result := ""
+
+	for _, w := range words {
+		result += w
+	}
+
+	return result
+}
+
+// ✅ быстрый способ (strings.Builder)
+func ConcatFast(words []string) string {
+	var b strings.Builder
+
+	for _, w := range words {
+		b.WriteString(w)
+	}
+
+	return b.String()
+}
+```
+А тут у нас обьявление этих двух функций.
+
+`internal/stringutils/concat_test.go`:
+```go
+package stringutils
+
+import "testing"
+
+var data = []string{
+	"go", "is", "really", "fast", "and", "efficient",
+}
+
+// ❌ Benchmark медленного варианта
+func BenchmarkConcatSlow(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		_ = ConcatSlow(data)
+	}
+}
+
+// ✅ Benchmark быстрого варианта
+func BenchmarkConcatFast(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		_ = ConcatFast(data)
+	}
+}
+```
+В файле теста мы обьявляем два теста и крутим тестируемые функции в цикле. 
+
+Давайте запустим тесты:
+```bash
+go test -bench=. ./internal/stringutils
+```
+
+И увидим что-то на подобии:
+```bash
+BenchmarkConcatSlow-24           7974075               176.2 ns/op
+BenchmarkConcatFast-24          12686482               116.4 ns/op
+```
+Читать это нужно так:
+```
+7974075    → сколько раз выполнено
+176.2 ns/op  → сколько наносекунд на одну операцию
+```
+
+##### Запуск тестов
+
+В Go в основном тесты вызываются для пакета или для всех пакетов. 
+По этому и файлы тестов тоже могут быть в директории пакета, а не в отдельной директории  в корне типа `tests`.
+
+Все виды тестов запускаются через одну команду `go test`.
+
+Основные варианты запуска выглядят так:
+
+Вариант 1 — все тесты во всем проекте. 
+Из корня проекта:
+```bash
+#
+go test ./...
+```
+Это значит:
+
+- пройти по всем пакетам модуля
+- найти в них *_test.go
+- запустить TestXxx функции
+- запустить ExampleXxx с // Output:
+
+Вариант 2 — только один пакет.
+Из корня проекта:
+```bash
+go test ./internal/stringutils
+```
+
+Вариант 3 — только один конкретный тест.
+Из корня проекта:
+```bash
+go test ./internal/stringutils -run TestFirstChar
+```
+
+Вариант 4 запуск Benchmark.
+```bash
+#Один пакет
+go test -bench=. ./internal/stringutils
+
+#Все пакеты
+go test -bench=. ./...
+``` 
+
+Вариант 5 запуск Benchmark.
+```bash
+#Конкретный fuzz-тест в конкретном пакете
+go test -fuzz=FuzzFirstChar ./internal/stringutils
+```
+fuzz обычно запускают точечно, а не по всему проекту.
+
+##### Практика
+
+И теперь в завершении этой темы давайте добавим в наше API по одному unit, integration, e2e тесту.
+ 
