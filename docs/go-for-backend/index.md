@@ -5152,18 +5152,412 @@ curl -u admin:secret http://localhost:8080/tasks
 
 Далее сервер использует эти данные (например, user_id и username) для обработки запроса.
 
+На этом шаге я хочу:
+1. Добавить пользователя как сущность в проект 
+2. Добавить маршрут регистрации и внесения пользователя в бд. 
+3. Добавить маршрут логина. Если пользователь удачно логинится то генерация JWT токена 
+4. Добавить middleware в котором будет проверяться подленость JWT (проверка подписи). Этот middleware будет подключен вместо имеющихся сейчас basic auth и api key. Если проверка подписи успешная, то user_id и user_name записываются в контекст. 
+5. В текущем middleware internal/http/middlefware/logging.go добавить в логи id и name делающего запрос.
+
 Ну хорошо, с этим все и давайте приступим. 
-Переключусь на тег step11 и посмотрим на изменения приложения. 
+Переключусь на тег step11 и посмотрим на изменения приложения.
 
-У меня есть проект. Его код во вложении.
-Моя задача реализовать демонстрацию работы с JWT. Вот мой план в общем: 
-1. Добавить маршрут регистрации и внесения пользователя в бд. 
-2. Добавить маршрут логина. Если пользователь удачно логинится то генерация JWT токена 
-3. Добавить middleware в котором будет проверяться подленость JWT (проверка подписи). Этот middleware будет подключен вместо имеющихся сейчас basic auth и api key. Если проверка подписи успешная, то user_id и user_name записываются в контекст. 
-4. В текущем middleware internal/http/middleware/logging.go добавить в логи id и name делающего запрос.
+Но сначала нужно создать новую таблицу для будуюших пользователей:
+```sql
+CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    password TEXT NOT NULL
+);
+```
 
+Далее давайте посмотрим на новые файлы.
 
+Первый это файл `internal/users/user.go`:
+```go
+package users
 
+type User struct {
+	ID       int64  `json:"id"`
+	Username string `json:"username"`
+	Password string `json:"-"` // храним хэш
+}
+```
+
+Тут мы создаем структуру будущего пользователя. 
+
+Следующий файл это `internal/users/repository/postgres.go`:
+```go
+package repository
+
+import (
+	"database/sql"
+
+	"github.com/vysmv/task-manager-api/internal/users"
+)
+
+type UsersRepository struct {
+	db *sql.DB
+}
+
+func NewUsersRepository(db *sql.DB) *UsersRepository {
+	return &UsersRepository{db: db}
+}
+
+func (r *UsersRepository) Create(username, passwordHash string) (users.User, error) {
+	var u users.User
+
+	err := r.db.QueryRow(
+		`INSERT INTO users (username, password)
+		 VALUES ($1, $2)
+		 RETURNING id, username, password`,
+		username, passwordHash,
+	).Scan(&u.ID, &u.Username, &u.Password)
+
+	return u, err
+}
+
+func (r *UsersRepository) GetByUsername(username string) (users.User, error) {
+	var u users.User
+
+	err := r.db.QueryRow(
+		`SELECT id, username, password FROM users WHERE username = $1`,
+		username,
+	).Scan(&u.ID, &u.Username, &u.Password)
+
+	return u, err
+}
+```
+В этом файле реализована логика работы с базой для пользователей. 
+По смыслу это схоже с репозиторием у тасков. 
+Тут у нас есть структура `UsersRepository`.
+Функция создания нового репозитория `NewUsersRepository`. 
+И методы `Create` и `GetByUsername`. 
+
+Следующий файл это `internal/http/handlers/auth.go`:
+```go
+package handlers
+
+import (
+	"encoding/json"
+	"net/http"
+	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/vysmv/task-manager-api/internal/http/response"
+	userRepo "github.com/vysmv/task-manager-api/internal/users/repository"
+)
+
+type AuthHandler struct {
+	repo *userRepo.UsersRepository
+	jwtSecret []byte
+}
+
+func NewAuthHandler(repo *userRepo.UsersRepository, secret string) *AuthHandler {
+	return &AuthHandler{
+		repo: repo,
+		jwtSecret: []byte(secret),
+	}
+}
+
+type registerRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
+	var req registerRequest
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.WriteError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+
+	user, err := h.repo.Create(req.Username, req.Password)
+	if err != nil {
+		response.WriteError(w, http.StatusInternalServerError, "failed to create user")
+		return
+	}
+
+	response.WriteJSON(w, http.StatusCreated, user)
+}
+
+type loginRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
+	var req loginRequest
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.WriteError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+
+	user, err := h.repo.GetByUsername(req.Username)
+	if err != nil || user.Password != req.Password {
+		response.WriteError(w, http.StatusUnauthorized, "invalid credentials")
+		return
+	}
+
+	claims := jwt.MapClaims{
+		"user_id":   user.ID,
+		"username":  user.Username,
+		"exp":       time.Now().Add(time.Hour).Unix(),
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+
+	tokenStr, err := token.SignedString(h.jwtSecret)
+	if err != nil {
+		response.WriteError(w, http.StatusInternalServerError, "failed to generate token")
+		return
+	}
+
+	response.WriteJSON(w, http.StatusOK, map[string]string{
+		"token": tokenStr,
+	})
+}
+```
+Здесь мы создаем обработчик для регистрации и логина. 
+
+Далее идет файл `internal/http/middleware/jwt.go`:
+```go
+package middleware
+
+import (
+	"context"
+	"net/http"
+	"strings"
+
+	"github.com/golang-jwt/jwt/v5"
+)
+
+type contextKey string
+
+const (
+	UserIDKey   contextKey = "user_id"
+	UsernameKey contextKey = "username"
+)
+
+func JWTAuth(secret string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+			authHeader := r.Header.Get("Authorization")
+			if authHeader == "" {
+				http.Error(w, "missing token", http.StatusUnauthorized)
+				return
+			}
+
+			parts := strings.Split(authHeader, " ")
+			if len(parts) != 2 || parts[0] != "Bearer" {
+				http.Error(w, "invalid token format", http.StatusUnauthorized)
+				return
+			}
+
+			tokenStr := parts[1]
+
+			token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (any, error) {
+				return []byte(secret), nil
+			})
+
+			if err != nil || !token.Valid {
+				http.Error(w, "invalid token", http.StatusUnauthorized)
+				return
+			}
+
+			claims := token.Claims.(jwt.MapClaims)
+
+			ctx := context.WithValue(r.Context(), UserIDKey, int64(claims["user_id"].(float64)))
+			ctx = context.WithValue(ctx, UsernameKey, claims["username"].(string))
+
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+```
+Тут мы создаем 
+
+Далее вносим правки в уже существующий `internal/http/middleware/logging.go`:
+```go
+package middleware
+
+import (
+	"log"
+	"net/http"
+	"time"
+)
+
+type responseWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (rw *responseWriter) WriteHeader(status int) {
+	rw.status = status
+	rw.ResponseWriter.WriteHeader(status)
+}
+
+func Logging(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+
+		rw := &responseWriter{
+			ResponseWriter: w,
+			status:         http.StatusOK,
+		}
+
+		next.ServeHTTP(rw, r)
+
+		duration := time.Since(start)
+
+		userID := r.Context().Value(UserIDKey)
+		username := r.Context().Value(UsernameKey)
+
+		log.Printf(
+			"%s %s %d %s user_id=%v username=%v",
+			r.Method,
+			r.URL.Path,
+			rw.status,
+			duration,
+			userID,
+			username,
+		)
+	})
+}
+```
+
+Далее вносим правки в файл `internal/http/routes/routes.go`:
+```go
+func Register(tasksHandler *handlers.TasksHandler, authHandler *handlers.AuthHandler, mux *http.ServeMux) {
+
+	mux.HandleFunc("POST /register", authHandler.Register)
+	mux.HandleFunc("POST /login", authHandler.Login)
+
+	jwtMiddleware := middleware.JWTAuth("secret")
+
+	mux.Handle(
+		"POST /tasks",
+		jwtMiddleware(http.HandlerFunc(tasksHandler.Create)),
+	)
+
+	mux.Handle(
+		"GET /tasks",
+		jwtMiddleware(middleware.Logging(http.HandlerFunc(tasksHandler.List))),
+	)
+
+	mux.Handle(
+		"GET /tasks/",
+		jwtMiddleware(http.HandlerFunc(tasksHandler.Get)),
+	)
+
+	mux.Handle(
+		"PATCH /tasks/",
+		jwtMiddleware(http.HandlerFunc(tasksHandler.Update)),
+	)
+
+	mux.Handle(
+		"DELETE /tasks/",
+		jwtMiddleware(http.HandlerFunc(tasksHandler.Delete)),
+	)
+}
+```
+
+И в завершении редактируем файл `internal/app/app.go`:
+```go
+package app
+
+import (
+	"fmt"
+	"net/http"
+
+	"github.com/vysmv/task-manager-api/internal/config"
+	"github.com/vysmv/task-manager-api/internal/http/handlers"
+	"github.com/vysmv/task-manager-api/internal/http/routes"
+	"github.com/vysmv/task-manager-api/internal/storage/postgres"
+	"github.com/vysmv/task-manager-api/internal/tasks/repository"
+	userRepo "github.com/vysmv/task-manager-api/internal/users/repository"
+)
+
+func Run() error {
+	cfg := config.MustLoad()
+
+	db, err := postgres.New(cfg)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	tasksRepo := repository.NewTasksRepository(db)
+	tasksHandler := handlers.NewTasksHandler(tasksRepo)
+
+	usersRepo := userRepo.NewUsersRepository(db)
+	authHandler := handlers.NewAuthHandler(usersRepo, "secret")
+
+	mux := http.NewServeMux()
+
+	routes.Register(tasksHandler, authHandler, mux)
+
+	server := &http.Server{
+		Addr:    ":" + cfg.HTTPPort,
+		Handler: mux,
+	}
+
+	fmt.Printf("server started on :%s\n", cfg.HTTPPort)
+
+	return server.ListenAndServe()
+}
+```
+
+И нам осталось только протестировать.
+Регистрация пользователя:
+```bash
+curl -X POST http://localhost:8080/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "test",
+    "password": "1234"
+  }'
+```
+
+Логин (получение JWT):
+```bash
+curl -X POST http://localhost:8080/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "test",
+    "password": "1234"
+  }'
+```
+
+Далее сохраняем токен в переменную:
+```bash
+TOKEN="вставь_сюда_токен"
+```
+
+Создание задачи (JWT обязателен):
+```bash
+curl -X POST http://localhost:8080/tasks \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "my task"
+  }'
+```
+
+Получение списка задач:
+```bash
+curl -X GET http://localhost:8080/tasks \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Запрос без токена:
+```bash
+curl -X GET http://localhost:8080/tasks
+```
 
 ##  
 
