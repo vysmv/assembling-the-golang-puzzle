@@ -4879,38 +4879,271 @@ var req CreateTaskRequest
 В общем это базовый пример работы с дебагом. 
 Делать более расширеное обьяснение я не буду, думаю этого достаточно для самостоятельного анализа собственного кода и получения своего личного опыта. 
 
-## JWT 
+## Аутентификация 
 
-Нужны пользователи?
-│
-├─ ❌ Нет
-│   └─ API Key (90% случаев)
-│
-└─ ✅ Да
-    │
-    ├─ Это SPA / mobile / API?
-    │   └─ JWT
-    │
-    ├─ Это серверный HTML?
-    │   └─ Sessions
-    │
-    └─ Нужен внешний логин?
-        └─ OAuth + JWT/Session
-
-Если ты будешь делать реальные проекты на Go:
-
-ты 100% сделаешь:
-- API Key middleware ✅
-- JWT middleware ✅
-
-возможно:
-- Basic Auth ✅
-
+Следующим блоком я решил посмотреть на вопрос аутентификации.
+Если говорить в общем, то существует множество способов реализовывать аутентификацию, но если сузить до веба, а потом до наиболее частых случаев использования на типичных Go-проектах, то получится такая картина:
+```
 API Key — для простых и внутренних API
-JWT — для user-based API (это API, где каждый запрос делается “от имени конкретного пользователя”)
 Basic Auth — для быстрых решений
-Sessions — редко
-OAuth — точечно
+JWT — для user-based API (это API, где каждый запрос делается “от имени конкретного пользователя”)
+```
+Давайте посмотрим чуть подробнее что они из себя представляют.
+
+### Basic Auth
+
+Я начну с Basic Auth.
+
+Перейдем на тег step9 и посмотрим что изменилось в проекте.
+
+Первое, у нас добавился файл `internal/http/middleware/basic_auth.go`:
+```go
+package middleware
+
+import (
+	"net/http"
+)
+
+func BasicAuth(next http.Handler) http.Handler {
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+		user, pass, ok := r.BasicAuth()
+
+		if !ok || user != "admin" || pass != "secret" {
+			w.Header().Set("WWW-Authenticate", `Basic realm="restricted"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+
+}
+```
+Это такой же middleware как и в примере с логированием. 
+И тут мы используем встроенную в Go проверку через вызов метода `BasicAuth` и далее если в переменной `ok` не true или логин\пароль не подходят, то печатаем ошибку и return иначе просто вызывается следующее звено обработчика `next.ServeHTTP(w, r)`.
+
+И далее я немного изменил  файл `internal/app/app.go`:
+```go
+package app
+
+import (
+	"fmt"
+	"net/http"
+
+	"github.com/vysmv/task-manager-api/internal/config"
+	"github.com/vysmv/task-manager-api/internal/http/handlers"
+	"github.com/vysmv/task-manager-api/internal/http/routes"
+	"github.com/vysmv/task-manager-api/internal/storage/postgres"
+	"github.com/vysmv/task-manager-api/internal/tasks/repository"
+)
+
+func Run() error {
+	cfg := config.MustLoad()
+
+	db, err := postgres.New(cfg)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	tasksRepo := repository.NewTasksRepository(db)
+	tasksHandler := handlers.NewTasksHandler(tasksRepo)
+
+	mux := http.NewServeMux()
+
+	routes.Register(tasksHandler, mux)
+
+	server := &http.Server{
+		Addr:    ":" + cfg.HTTPPort,
+		Handler: mux,
+	}
+
+	fmt.Printf("server started on :%s\n", cfg.HTTPPort)
+
+	return server.ListenAndServe()
+}
+```
+Собственно говоря, я убрал регистрацию маршрутов и перенес ее в новый файл `internal/http/routes/routes.go`:
+```go
+package routes
+
+import (
+	"net/http"
+
+	"github.com/vysmv/task-manager-api/internal/http/handlers"
+	"github.com/vysmv/task-manager-api/internal/http/middleware"
+)
+
+func Register(tasksHandler *handlers.TasksHandler, mux *http.ServeMux) {
+	mux.Handle(
+		"POST /tasks",
+		middleware.BasicAuth(http.HandlerFunc(tasksHandler.Create)),
+	)
+
+	mux.Handle(
+		"GET /tasks",
+		middleware.BasicAuth(middleware.Logging(http.HandlerFunc(tasksHandler.List))),
+	)
+
+	mux.Handle(
+		"GET /tasks/",
+		middleware.BasicAuth(http.HandlerFunc(tasksHandler.Get)),
+	)
+
+	mux.Handle(
+		"PATCH /tasks/",
+		middleware.BasicAuth(http.HandlerFunc(tasksHandler.Update)),
+	)
+
+	mux.Handle(
+		"DELETE /tasks/",
+		middleware.BasicAuth(http.HandlerFunc(tasksHandler.Delete)),
+	)
+}
+```
+И теперь у каждого маршрута в цепочке хендлеров есть `middleware.BasicAuth`.
+
+Проверим как это работает
+
+Пересоберем приложение и запустим сервер:
+```bash
+go run ./cmd/task-manager-api/
+```
+
+Без авторизации:
+```bash 
+curl http://localhost:8080/tasks
+```
+
+С авторизацией:
+```bash
+curl -u admin:secret http://localhost:8080/tasks
+```
+
+На этом все и идем дальше.
+
+### API key
+
+Далее рассмотрим API Key.
+Для этого я переключусь на тег step10.
+
+Тут мы можем увидеть что появился новый файл `internal/http/middleware/api_key.go`:
+```go
+package middleware
+
+import (
+	"net/http"
+)
+
+func APIKeyAuth(expectedKey string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+			key := r.Header.Get("X-API-Key")
+
+			if key == "" {
+				http.Error(w, "missing api key", http.StatusUnauthorized)
+				return
+			}
+
+			if key != expectedKey {
+				http.Error(w, "invalid api key", http.StatusUnauthorized)
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+```
+И снова это стандартный middleware по тем же правилам. 
+Только в этот раз мы получаем содержание заголовка `X-API-Key` и выполняем две проверки.
+На отсутствующий ключ и на неверный ключ. 
+
+И далее просто заменяем один middleware для маршрута DELETE в файле `internal/http/routes/routes.go`:
+```go
+package routes
+
+import (
+	"net/http"
+
+	"github.com/vysmv/task-manager-api/internal/http/handlers"
+	"github.com/vysmv/task-manager-api/internal/http/middleware"
+)
+
+func Register(tasksHandler *handlers.TasksHandler, mux *http.ServeMux) {
+	mux.Handle(
+		"POST /tasks",
+		middleware.BasicAuth(http.HandlerFunc(tasksHandler.Create)),
+	)
+
+	mux.Handle(
+		"GET /tasks",
+		middleware.BasicAuth(middleware.Logging(http.HandlerFunc(tasksHandler.List))),
+	)
+
+	mux.Handle(
+		"GET /tasks/",
+		middleware.BasicAuth(http.HandlerFunc(tasksHandler.Get)),
+	)
+
+	mux.Handle(
+		"PATCH /tasks/",
+		middleware.BasicAuth(http.HandlerFunc(tasksHandler.Update)),
+	)
+
+	mux.Handle(
+		"DELETE /tasks/",
+		middleware.APIKeyAuth(http.HandlerFunc(tasksHandler.Delete)),
+	)
+
+}
+```
+Теперь у нас DELETE будет отрабатывать `middleware.APIKeyAuth`.
+
+Давайте проверим как это работает.
+Пересоберем приложение и запустим сервер:
+```bash
+go run ./cmd/task-manager-api/
+```
+
+Без ключа:
+```bash
+curl -X DELETE http://localhost:8080/tasks/1
+```
+
+С неправильным ключом:
+```bash
+curl -X DELETE http://localhost:8080/tasks/1 \
+  -H "X-API-Key: wrong"
+```
+
+С правильным:
+```bash
+curl -X DELETE http://localhost:8080/tasks/1 \
+  -H "X-API-Key: super-secret-key"
+```
+
+И теперь если посмотреть список всех задач, то увидим что задачи с `id=1` уже нет:
+```bash
+curl -u admin:secret http://localhost:8080/tasks
+``` 
+
+### JWT
+
+Как я и сказал ранее, аутентификация при помощи JWT чаще используется для user-based API (это API, где каждый запрос делается “от имени конкретного пользователя”).
+А это значит, что для демонстрации у нас должны быть не только сущности `Task` но и `User`.
+Я решил сильно не усложнять, дабы не плодить сущности без необходимости, а это значит, что я просто добавлю пользователей которые будут иметь равные права.
+Таски не будут принадлежать пользователям, то есть не будет ни каких связей, а просто получать доступ к нашим маршрутам смогут только зарегистрированные пользователи. 
+В общем это будет набор условных админов с полными правами. 
+
+Ну хорошо, с этим все и давайте приступим. 
+Переключусь на тег step11 и посмотрим на изменения приложения. 
+
+
+
 
 ##  
 
