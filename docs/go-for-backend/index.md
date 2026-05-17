@@ -494,7 +494,7 @@ moved to heap: x
 ```
 
 То есть мы убедились, что возврат указателя на локальную переменную приводит к тому, что значение будет храниться в `heap`.
-
+!!!
 Далее посмотрим на пример с замыканием:
 `demo/heap/closure/main.go`
 ```go
@@ -523,7 +523,7 @@ func main() {
 go run -gcflags='-m -l' demo/heap/closure/main.go
 ```
 
-мы увидим строки: 
+И как и предпологалось мы увидим строки: 
 ```bash
 ./main.go:4:2: moved to heap: i
 ./main.go:6:9: func literal escapes to heap
