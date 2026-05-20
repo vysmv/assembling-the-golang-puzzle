@@ -77,7 +77,7 @@ Makefile     — автоматизация задач (build, audit, migrations
 ### Действия
 1. 
 ```bash
-mkdir -p $HOME/greenlight
+mkdir -p $HOME/greenlight && code ./greenlight
 go mod init github.com:vysmv/greenlight
 mkdir -p bin cmd/api internal migrations remote
 touch Makefile
