@@ -45,6 +45,8 @@
 
 ## Начало работы
 
+### Слайды
+
 (Слайд №1\getting-started)
 
 ```text
@@ -52,6 +54,7 @@
 - создадим директорию проекта
 - инициализируем модуль
 - создадим базовую структуру проекта
+- выполним тестовый запуск
 ```
 
 (Слайд №2\getting-started)
@@ -66,12 +69,6 @@ migrations/  — SQL-миграции базы данных
 remote/      — конфиги и скрипты production-сервера
 go.mod       — зависимости и модули проекта
 Makefile     — автоматизация задач (build, audit, migrations)
-```
-
-(Слайд №3\getting-started)
-
-```
-Напишем первый тестовый код для теста и запустим приложение.
 ```
 
 ### Действия
@@ -98,3 +95,119 @@ func main() {
 ```bash
 go run ./cmd/api
 ```
+
+### Слайды
+
+(Слайд №3\getting-started)
+
+Следующим шагом напишем код, необходимый для подготовки и запуска сервера.
+
+Пакет main будет собирать зависимости в структуру application и запускать сервер.
+
+Также создадим первый эндпоинт:
+
+/v1/healthcheck
+
+Этот ресурс будет предоставлять базовую информацию об API:
+- status
+- environment
+- version
+
+(Слайд №4\getting-started)
+
+План:
+1. Создадим в файле cmd/api/main.go:
+   - version
+   - config
+   - application
+2. Используем пакет flag для возможности изменения значений env и port в конфигурации приложения.
+3. Создадим собственный логгер.
+4. Установим зависимости в application.
+5. Создадим свой ServeMux и зарегистрируем первый маршрут.
+6. Создадим healthcheckHandler.
+7. Запустим сервер.
+8. Выполним тестовый запуск.
+
+Поехали!
+
+### Действия
+
+cmd/api/main.go
+```go
+package main
+
+import (
+    "flag"
+    "fmt"
+    "log/slog"
+    "net/http"
+    "os"
+    "time"
+)
+
+const version = "1.0.0"
+
+type config struct {
+    port int
+    env  string
+}
+
+type application struct {
+    config config
+    logger *slog.Logger
+}
+
+func main() {
+    var cfg config
+
+    flag.IntVar(&cfg.port, "port", 4000, "API server port")
+    flag.StringVar(&cfg.env, "env", "development", "Environment (development|staging|production)")
+    flag.Parse()
+
+    logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+
+    app := &application{
+        config: cfg,
+        logger: logger,
+    }
+
+    mux := http.NewServeMux()
+    mux.HandleFunc("/v1/healthcheck", app.healthcheckHandler)
+
+    srv := &http.Server{
+        Addr:         fmt.Sprintf(":%d", cfg.port),
+        Handler:      mux,
+        IdleTimeout:  time.Minute,
+        ReadTimeout:  5 * time.Second,
+        WriteTimeout: 10 * time.Second,
+        ErrorLog:     slog.NewLogLogger(logger.Handler(), slog.LevelError),
+    }
+
+    logger.Info("starting server", "addr", srv.Addr, "env", cfg.env)
+    
+    err := srv.ListenAndServe()
+    logger.Error(err.Error())
+    os.Exit(1)
+}
+```
+
+```bash
+touch cmd/api/healthcheck.go
+```
+
+cmd/api/healthcheck.go
+```go
+package main
+
+import (
+    "fmt"
+    "net/http"
+)
+
+func (app *application) healthcheckHandler(w http.ResponseWriter, r *http.Request) {
+    fmt.Fprintln(w, "status: available")
+    fmt.Fprintf(w, "environment: %s\n", app.config.env)
+    fmt.Fprintf(w, "version: %s\n", version)
+}
+```
+
