@@ -212,6 +212,7 @@ func (app *application) healthcheckHandler(w http.ResponseWriter, r *http.Reques
 ```
 
 ```bash
+go run ./cmd/api
 curl -i localhost:4000/v1/healthcheck
 ```
 
