@@ -211,3 +211,160 @@ func (app *application) healthcheckHandler(w http.ResponseWriter, r *http.Reques
 }
 ```
 
+```bash
+curl -i localhost:4000/v1/healthcheck
+```
+
+### Слайды
+
+(Слайд №5/getting-started)
+
+Мы начали с использования маршрутизатора ServeMux из пакета net/http.
+Но в дальнейшем будем использовать пакет httprouter.
+
+Причины:
+
+- По умолчанию http.ServeMux возвращает ответы с ошибкой 404 Not Found
+  с заголовком:
+  Content-Type: text/plain; charset=utf-8
+
+  Это поведение можно переопределить через middleware
+  или собственный обработчик ошибок, чтобы возвращать JSON-ответы:
+  Content-Type: application/json
+
+- http.ServeMux не предоставляет встроенной обработки
+  405 Method Not Allowed.
+
+- http.ServeMux не поддерживает автоматическую обработку
+  OPTIONS-запросов и формирование заголовка Allow.
+
+
+(Слайд №6/getting-started)
+
+План:
+1. Заменить маршрутизатор.
+2. Создать два новых эндпоинта.
+┌────────┬────────────────────┬──────────────────────┬───────────────────────────────────┐
+│ Method │ URL Pattern        │ Handler              │ Действие                          │
+├────────┼────────────────────┼──────────────────────┼───────────────────────────────────┤
+│ GET    │ /v1/healthcheck    │ healthcheckHandler   │ Показать информацию о приложении  │
+│ POST   │ /v1/movies         │ createMovieHandler   │ Создать новый фильм               │
+│ GET    │ /v1/movies/:id     │ showMovieHandler     │ Показать конкретный фильм         │
+└────────┴────────────────────┴──────────────────────┴───────────────────────────────────┘
+3. Создать дополнительный метод для чтения параметра id из URL-адреса.
+4. Выполнить тестовые запросы.
+
+### Действия
+
+touch cmd/api/routes.go
+```go
+package main
+
+import (
+    "net/http"
+
+    "github.com/julienschmidt/httprouter"
+)
+
+func (app *application) routes() http.Handler {
+    router := httprouter.New()
+
+    router.HandlerFunc(http.MethodGet, "/v1/healthcheck", app.healthcheckHandler)
+    router.HandlerFunc(http.MethodPost, "/v1/movies", app.createMovieHandler)
+    router.HandlerFunc(http.MethodGet, "/v1/movies/:id", app.showMovieHandler)
+
+    return router
+}
+```
+
+DELETE in cmd/api/main.go
+```go
+mux := http.NewServeMux()
+mux.HandleFunc("/v1/healthcheck", app.healthcheckHandler)
+```
+
+UPDATE in cmd/api/main.go
+```go
+srv := &http.Server{
+    Addr:         fmt.Sprintf(":%d", cfg.port),
+    Handler:      app.routes(), // <-
+    IdleTimeout:  time.Minute,
+    ReadTimeout:  5 * time.Second,
+    WriteTimeout: 10 * time.Second,
+    ErrorLog:     slog.NewLogLogger(logger.Handler(), slog.LevelError),
+}
+```
+
+```bash
+ touch cmd/api/movies.go
+ ```
+
+ cmd/api/movies.go
+ ```go
+ package main
+
+import (
+    "fmt"
+    "net/http"
+    "strconv" 
+
+    "github.com/julienschmidt/httprouter" 
+)
+
+func (app *application) createMovieHandler(w http.ResponseWriter, r *http.Request) {
+    fmt.Fprintln(w, "create a new movie")
+}
+
+func (app *application) showMovieHandler(w http.ResponseWriter, r *http.Request) {
+    id, err := app.readIDParam(r)
+    if err != nil {
+        http.NotFound(w, r)
+        return
+    }
+
+    fmt.Fprintf(w, "show the details of movie %d\n", id)
+}
+```
+
+```bash
+touch cmd/api/helpers.go
+```
+
+cmd/api/helpers.go
+```go
+package main
+
+import (
+    "errors"
+    "net/http"
+    "strconv"
+
+    "github.com/julienschmidt/httprouter"
+)
+ 
+func (app *application) readIDParam(r *http.Request) (int, error) {
+    params := httprouter.ParamsFromContext(r.Context())
+
+    id, err := strconv.Atoi(params.ByName("id"))
+    if err != nil || id < 1 {
+        return 0, errors.New("invalid id parameter")
+    }
+
+    return id, nil
+}
+```
+
+REBUILD
+```bash
+go run ./cmd/api
+```
+
+TEST
+```bash
+curl localhost:4000/v1/healthcheck
+curl -X POST localhost:4000/v1/movies
+curl localhost:4000/v1/movies/123
+curl -i -X ​​POST localhost:4000/v1/healthcheck
+curl -i -X ​​OPTIONS localhost:4000/v1/healthcheck
+curl -i localhost:4000/v1/movies/abc
+```
