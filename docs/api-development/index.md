@@ -307,9 +307,6 @@ srv := &http.Server{
 import (
     "fmt"
     "net/http"
-    "strconv" 
-
-    "github.com/julienschmidt/httprouter" 
 )
 
 func (app *application) createMovieHandler(w http.ResponseWriter, r *http.Request) {
