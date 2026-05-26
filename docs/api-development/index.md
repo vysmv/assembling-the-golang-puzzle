@@ -559,7 +559,7 @@ cmd/api/healthcheck.go
 DELETE "fmt"
 ```go
 func (app *application) healthcheckHandler(w http.ResponseWriter, r *http.Request) {
-    env := envelope{
+    envelope := envelope{
         "status": "available",
         "system_info": map[string]string{
             "environment": app.config.env,
@@ -567,7 +567,7 @@ func (app *application) healthcheckHandler(w http.ResponseWriter, r *http.Reques
         },
     }
 
-    err := app.writeJSON(w, http.StatusOK, env, nil)
+    err := app.writeJSON(w, http.StatusOK, envelope, nil)
     if err != nil {
         app.serverErrorResponse(w, r, err)
     }
