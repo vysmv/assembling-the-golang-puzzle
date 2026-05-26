@@ -556,7 +556,9 @@ type Movie struct {
 ### Действия
 
 cmd/api/healthcheck.go
-DELETE "fmt"
+
+DELETE 
+- "fmt"
 ```go
 func (app *application) healthcheckHandler(w http.ResponseWriter, r *http.Request) {
     envelope := envelope{
@@ -575,9 +577,10 @@ func (app *application) healthcheckHandler(w http.ResponseWriter, r *http.Reques
 ```
 
 File: cmd/api/movies.go
+
 ADD
-"time" // New import
-"github.com/vysmv/greenlight/internal/data" // New import
+- "time" // New import
+- "github.com/vysmv/greenlight/internal/data" // New import
 ```go
 func (app *application) showMovieHandler(w http.ResponseWriter, r *http.Request) {
     id, err := app.readIDParam(r)
