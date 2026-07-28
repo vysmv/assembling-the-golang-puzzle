@@ -1,0 +1,2 @@
+Request
+curl -H "Authorization: Bearer RIDBIAE3AMMK57T6IAEBUGA7ZQ" localhost:8080/v1/movies/1

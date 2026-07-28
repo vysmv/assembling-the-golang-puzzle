@@ -1,0 +1,5 @@
+docker compose up --build
+    => Собирается образ api по инструкции docker/go/Dockerfile
+    => Используется готовый образ postgres:18
+    => Создаются контейнеры api и postgres
+    => В контейнере api запускается ./docker/entrypoint.sh

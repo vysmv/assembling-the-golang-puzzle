@@ -1,0 +1,16 @@
+Процесс demo-api
+│
+├── goroutine #1 ──> recoverPanic ──> router ──> handler ──> panic!!!
+│                                                         |
+│                                                         v
+│                                              defer + recover
+│                                                         |
+│                                                         v
+│                                              вернуть HTTP 500
+│                                                         |
+│                                                         v
+│                                           goroutine завершилась
+│
+├── goroutine #2 ──> продолжает работать ──> ...
+│
+└── goroutine #3 ──> продолжает работать ──> ...

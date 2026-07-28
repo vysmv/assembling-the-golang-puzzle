@@ -1,0 +1,14 @@
+Response
+{
+    "movie": {
+        "id": 1,
+        "title": "Moana",
+        "year": 2016,
+        "runtime": "107 mins",
+        "genres": [
+            "animation",
+            "adventure"
+        ],
+        "version": 1
+    }
+}

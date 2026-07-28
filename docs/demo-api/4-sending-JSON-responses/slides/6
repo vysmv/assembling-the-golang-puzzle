@@ -1,0 +1,10 @@
+http.Server
+      │
+      ▼
+recoverPanic
+      │
+      ▼
+httprouter
+      │
+      ▼
+конкретный handler

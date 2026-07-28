@@ -1,0 +1,3 @@
+./bin/demo-api --port=9090 --env=development
+./bin/demo-api -port=9090 -env=development
+./bin/demo-api --port 9090 --env development
