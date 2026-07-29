@@ -79,7 +79,7 @@ func json.MarshalIndent(v any, prefix string, indent string) ([]byte, error)
 
 (Слайд №4)
 
-Например следующий срез байтов:
+Например, следующий срез байтов:
 ```go
 []byte{'h','e','l','l','o'}
 ```
@@ -327,7 +327,7 @@ curl -X POST -i localhost:8080/v1/movies/123
 
 Как результат, увидим, что мы получили именно JSON-ответ, то есть наше переопределение обработчика на `router.MethodNotAllowed` сработало:
 ```text
-TTP/1.1 405 Method Not Allowed
+HTTP/1.1 405 Method Not Allowed
 Allow: GET, OPTIONS
 Content-Type: application/json
 Date: Tue, 14 Jul 2026 13:33:59 GMT
