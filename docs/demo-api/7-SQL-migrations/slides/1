@@ -1,0 +1,14 @@
+commit A
+│
+├── application code
+└── migrations 001–003
+
+commit B
+│
+├── application code
+└── migrations 001–004
+
+commit C
+│
+├── application code
+└── migrations 001–005

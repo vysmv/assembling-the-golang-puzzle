@@ -1,1 +1,1 @@
-DB_DSN="postgres://vysmv:secret@postgres/demo_api?sslmode=disable"
+go get github.com/lib/pq@v1
